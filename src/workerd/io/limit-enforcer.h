@@ -188,6 +188,12 @@ class LimitEnforcer {
 
   // Only used downstream for internal metrics.
   virtual kj::Duration consumeTimeElapsedForPeriodicLogging() = 0;
+
+  // Returns the last snapshotted SQLite memory usage for the current actor, in bytes. Returns 0
+  // for non-actor isolates.
+  virtual size_t getSqliteMemoryUsage() const {
+    return 0;
+  }
 };
 
 }  // namespace workerd

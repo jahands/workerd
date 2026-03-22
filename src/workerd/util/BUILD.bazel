@@ -192,6 +192,17 @@ wd_cc_library(
 )
 
 wd_cc_library(
+    name = "sqlite-metering",
+    srcs = ["sqlite-metering.c++"],
+    hdrs = ["sqlite-metering.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@capnp-cpp//src/kj",
+        "@sqlite3",
+    ],
+)
+
+wd_cc_library(
     name = "sqlite",
     srcs = [
         "sqlite.c++",
@@ -211,6 +222,7 @@ wd_cc_library(
     deps = [
         ":account-limits",
         ":sentry",
+        ":sqlite-metering",
         "@capnp-cpp//src/kj:kj-async",
     ],
 )
@@ -377,6 +389,15 @@ kj_test(
     src = "sqlite-kv-test.c++",
     deps = [
         ":sqlite",
+    ],
+)
+
+kj_test(
+    size = "medium",
+    src = "sqlite-metering-test.c++",
+    deps = [
+        ":sqlite-metering",
+        "@capnp-cpp//src/kj",
     ],
 )
 

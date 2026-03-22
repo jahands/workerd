@@ -9,6 +9,7 @@
 #include <workerd/io/trace.h>
 #include <workerd/util/sqlite-kv.h>
 #include <workerd/util/sqlite-metadata.h>
+#include <workerd/util/sqlite-metering.h>
 
 namespace workerd {
 

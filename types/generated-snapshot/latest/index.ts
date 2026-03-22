@@ -10092,6 +10092,7 @@ export type AiOptions = {
   returnRawResponse?: boolean;
   prefix?: string;
   extraHeaders?: object;
+  signal?: AbortSignal;
 };
 export type AiModelsSearchParams = {
   author?: string;

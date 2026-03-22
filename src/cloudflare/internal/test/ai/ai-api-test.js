@@ -364,5 +364,51 @@ export const tests = {
         },
       });
     }
+
+    {
+      // Test signal option is not included in request body
+      const controller = new AbortController();
+      const resp = await env.ai.run(
+        'rawInputs',
+        { prompt: 'test' },
+        { signal: controller.signal }
+      );
+
+      assert.deepStrictEqual(resp, {
+        inputs: { prompt: 'test' },
+        options: {},
+        requestUrl: 'https://workers-binding.ai/run?version=3',
+      });
+    }
+
+    {
+      // Test already-aborted signal throws AbortError
+      await assert.rejects(
+        async () => {
+          await env.ai.run(
+            'rawInputs',
+            { prompt: 'test' },
+            { signal: AbortSignal.abort() }
+          );
+        },
+        { name: 'AbortError' }
+      );
+    }
+
+    {
+      // Test aborting an in-flight request
+      const controller = new AbortController();
+      let resolved = false;
+      const promise = env.ai
+        .run('hangingModel', { prompt: 'test' }, { signal: controller.signal })
+        .finally(() => {
+          resolved = true;
+        });
+      // Wait a moment for the request to start.
+      await scheduler.wait(10);
+      assert.deepStrictEqual(resolved, false);
+      controller.abort();
+      await assert.rejects(promise, { name: 'AbortError' });
+    }
   },
 };

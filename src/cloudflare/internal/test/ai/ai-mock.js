@@ -110,6 +110,14 @@ export default {
       );
     }
 
+    if (modelName === 'hangingModel') {
+      // Never resolve — used to test abort signal on an in-flight request.
+      // We can't just return a hanging promise because the runtime actually detects that and
+      // errors. We use an excessively long timeout instead so that the runtime thinks that it's
+      // actually waiting for something.
+      await scheduler.wait(1e8);
+    }
+
     if (modelName === 'inputErrorModel') {
       return Response.json(
         {

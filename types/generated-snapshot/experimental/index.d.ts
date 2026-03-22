@@ -10738,6 +10738,7 @@ type AiOptions = {
   returnRawResponse?: boolean;
   prefix?: string;
   extraHeaders?: object;
+  signal?: AbortSignal;
 };
 type AiModelsSearchParams = {
   author?: string;

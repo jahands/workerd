@@ -417,6 +417,12 @@ kj::Promise<WorkerInterface::AlarmResult> RpcWorkerInterface::runAlarm(
   });
 }
 
+kj::Promise<void> RpcWorkerInterface::abandonAlarm(kj::Date scheduledTime) {
+  auto req = dispatcher.abandonAlarmRequest();
+  req.setScheduledTimeMs((scheduledTime - kj::UNIX_EPOCH) / kj::MILLISECONDS);
+  return req.send().ignoreResult();
+}
+
 kj::Promise<WorkerInterface::CustomEvent::Result> RpcWorkerInterface::customEvent(
     kj::Own<CustomEvent> event) {
   return event->sendRpc(httpOverCapnpFactory, byteStreamFactory, dispatcher).attach(kj::mv(event));

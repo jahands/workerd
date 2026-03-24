@@ -221,6 +221,104 @@ impl Greeting {
 - The first parameter may be `&mut Lock` (or `&mut jsg::Lock`) if the constructor needs isolate access; it is not exposed as a JS argument.
 - If no `#[jsg_constructor]` is present, `new MyResource()` throws an `Illegal constructor` error, matching C++ JSG behavior.
 
+## Properties
+
+Three macros expose accessor properties on resource types.
+
+### `#[jsg_prototype_property]`
+
+A getter (and optional setter) on the resource **prototype**. Not directly enumerable — `Object.keys()` is empty, but `"prop" in obj` is `true`. Can be overridden by subclasses.
+
+```rust
+use std::cell::Cell;
+use jsg_macros::{jsg_resource, jsg_prototype_property};
+
+#[jsg_resource]
+struct Counter { value: Cell<f64> }
+
+#[jsg_resource]
+impl Counter {
+    #[jsg_prototype_property]               // JS name: "value"  (get_ stripped, camelCased)
+    pub fn get_value(&self) -> jsg::Number { jsg::Number::new(self.value.get()) }
+
+    #[jsg_prototype_property]               // setter detected from set_ prefix
+    pub fn set_value(&self, v: jsg::Number) { self.value.set(v.value()); }
+
+    #[jsg_prototype_property]               // read-only — no matching set_label
+    pub fn get_label(&self) -> String { "counter".into() }
+
+    #[jsg_prototype_property(name = "max")] // explicit JS name override
+    pub fn get_maximum(&self) -> jsg::Number { jsg::Number::new(1000.0) }
+}
+```
+
+### `#[jsg_instance_property]`
+
+A getter (and optional setter) as an **own property** on every instance. Directly enumerable — `Object.keys()` includes it, `hasOwnProperty()` returns `true`. Cannot be overridden by subclasses.
+
+> Prefer `#[jsg_prototype_property]` in almost all cases.
+
+Add `lazy` to cache the getter result after first access. Lazy properties are always read-only.
+
+```rust
+use std::cell::RefCell;
+use jsg_macros::{jsg_resource, jsg_instance_property};
+
+#[jsg_resource]
+struct Token { id: RefCell<String> }
+
+#[jsg_resource]
+impl Token {
+    #[jsg_instance_property]                    // read/write own property
+    pub fn get_id(&self) -> String { self.id.borrow().clone() }
+
+    #[jsg_instance_property]
+    pub fn set_id(&self, v: String) { *self.id.borrow_mut() = v; }
+
+    #[jsg_instance_property(lazy)]              // read-only, cached after first access
+    pub fn get_metadata(&self) -> String { expensive_computation() }
+
+    #[jsg_instance_property(name = "shortId")]  // explicit JS name override
+    pub fn get_prefix(&self) -> String { self.id.borrow()[..4].to_owned() }
+}
+// JS: Object.keys(token) // ["id", "metadata", "shortId"]
+//     token.hasOwnProperty("id") // true
+```
+
+### `#[jsg_inspect_property]`
+
+A getter registered under a unique symbol, invisible to normal property enumeration and string-key lookup. Surfaced by `node:util` `inspect()` and `console.log()`. Always read-only.
+
+```rust
+use jsg_macros::{jsg_resource, jsg_inspect_property};
+
+#[jsg_resource]
+struct ReadableStream { state: String }
+
+#[jsg_resource]
+impl ReadableStream {
+    #[jsg_inspect_property]                       // JS name: "state"
+    pub fn state(&self) -> String { self.state.clone() }
+
+    #[jsg_inspect_property(name = "streamState")] // explicit name override
+    pub fn get_debug(&self) -> String { format!("state={}", self.state) }
+}
+// JS: typeof stream.state // "undefined"  — invisible to string key lookup
+```
+
+### Naming rules (all three macros)
+
+| Rust method name | JS property name | Notes |
+|---|---|---|
+| `get_foo_bar` | `fooBar` | `get_` stripped, then camelCased |
+| `set_foo_bar` | `fooBar` | `set_` stripped — registers as setter |
+| `foo_bar` | `fooBar` | no prefix — registers as getter |
+| `(name = "myProp")` | `myProp` | explicit override wins |
+
+### Compat-flag behavior
+
+When the worker's `spec_compliant_property_attributes` compatibility flag is enabled, getter and setter function templates receive `.length` and `.name` values per Web IDL §3.7.6.
+
 ## Static Constants
 
 To expose numeric constants on a resource class (equivalent to `JSG_STATIC_CONSTANT` in C++), use `#[jsg_static_constant]` on `const` items inside a `#[jsg_resource]` impl block:

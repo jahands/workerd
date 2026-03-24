@@ -1748,9 +1748,7 @@ KJ_TEST("Server: referencing DO class as entrypoint is not an error") {
   }
 
   // However, a request will still fail at runtime.
-  KJ_EXPECT_LOG(ERROR, "worker is not an actor but class name was requested");
-  KJ_EXPECT_LOG(INFO, "Unable to get exported handler");
-  KJ_EXPECT_LOG(ERROR, "Unable to get exported handler");
+  KJ_EXPECT_LOG(ERROR, "jsg.TypeError: worker is not an actor but class name was requested");
 
   auto conn = test.connect("test-addr");
   conn.sendHttpGet("/");

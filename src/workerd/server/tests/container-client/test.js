@@ -575,7 +575,7 @@ export class DurableObjectExample extends DurableObject {
 
     container.start({
       enableInternet: true,
-      snapshots: [{ snapshot }],
+      directorySnapshots: [{ snapshot }],
     });
     const monitor = container.monitor().catch((_err) => {});
     await this.waitUntilContainerIsHealthy();
@@ -1019,7 +1019,7 @@ export class DurableObjectExample extends DurableObject {
 
     container.start({
       enableInternet: true,
-      snapshots: [{ snapshot }],
+      directorySnapshots: [{ snapshot }],
     });
     const monitor2 = container.monitor().catch((_err) => {});
     await this.waitUntilContainerIsHealthy();
@@ -1068,7 +1068,7 @@ export class DurableObjectExample extends DurableObject {
 
     container.start({
       enableInternet: true,
-      snapshots: [{ snapshot }],
+      directorySnapshots: [{ snapshot }],
     });
     const monitor2 = container.monitor().catch((_err) => {});
     await this.waitUntilContainerIsHealthy();
@@ -1120,7 +1120,7 @@ export class DurableObjectExample extends DurableObject {
 
     container.start({
       enableInternet: true,
-      snapshots: [{ snapshot: snap1 }, { snapshot: snap2 }],
+      directorySnapshots: [{ snapshot: snap1 }, { snapshot: snap2 }],
     });
     const monitor2 = container.monitor().catch((_err) => {});
     await this.waitUntilContainerIsHealthy();
@@ -1176,7 +1176,7 @@ export class DurableObjectExample extends DurableObject {
 
     container.start({
       enableInternet: true,
-      snapshots: [{ snapshot, mountPoint: '/app/restored' }],
+      directorySnapshots: [{ snapshot, mountPoint: '/app/restored' }],
     });
     const monitor2 = container.monitor().catch((_err) => {});
     await this.waitUntilContainerIsHealthy();
@@ -1276,8 +1276,8 @@ export class DurableObjectExample extends DurableObject {
       assert.equal(maskedResp.status, 404);
     };
 
-    const startAndAssert = async (snapshots) => {
-      container.start({ enableInternet: true, snapshots });
+    const startAndAssert = async (directorySnapshots) => {
+      container.start({ enableInternet: true, directorySnapshots });
       const restoreMonitor = container.monitor().catch((_err) => {});
       await this.waitUntilContainerIsHealthy();
       await assertRestoredTree();
@@ -1339,7 +1339,7 @@ export class DurableObjectExample extends DurableObject {
           try {
             container.start({
               enableInternet: true,
-              snapshots: [
+              directorySnapshots: [
                 { snapshot: firstSnapshot, mountPoint: '/tmp/duplicate' },
                 { snapshot: secondSnapshot, mountPoint: '/tmp/duplicate/' },
               ],
@@ -1378,7 +1378,7 @@ export class DurableObjectExample extends DurableObject {
       () =>
         container.start({
           enableInternet: true,
-          snapshots: [{ snapshot: fakeSnapshot, mountPoint: '/' }],
+          directorySnapshots: [{ snapshot: fakeSnapshot, mountPoint: '/' }],
         }),
       { message: /Directory snapshot cannot be restored to root directory\./ }
     );
@@ -1406,7 +1406,7 @@ export class DurableObjectExample extends DurableObject {
       () =>
         container.start({
           enableInternet: true,
-          snapshots: [{ snapshot: fakeSnapshot }],
+          directorySnapshots: [{ snapshot: fakeSnapshot }],
         }),
       { message: /Directory snapshot cannot be restored to root directory\./ }
     );
@@ -1434,7 +1434,9 @@ export class DurableObjectExample extends DurableObject {
       () =>
         container.start({
           enableInternet: true,
-          snapshots: [{ snapshot: fakeSnapshot, mountPoint: 'tmp/restored' }],
+          directorySnapshots: [
+            { snapshot: fakeSnapshot, mountPoint: 'tmp/restored' },
+          ],
         }),
       {
         message:
@@ -1484,7 +1486,7 @@ export class DurableObjectExample extends DurableObject {
           try {
             container.start({
               enableInternet: true,
-              snapshots: [{ snapshot: fakeSnapshot }],
+              directorySnapshots: [{ snapshot: fakeSnapshot }],
             });
           } catch (err) {
             return reject(err);

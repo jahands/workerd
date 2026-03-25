@@ -3908,6 +3908,9 @@ export interface Container {
   snapshotDirectory(
     options: ContainerDirectorySnapshotOptions,
   ): Promise<ContainerDirectorySnapshot>;
+  snapshotContainer(
+    options: ContainerSnapshotOptions,
+  ): Promise<ContainerSnapshot>;
 }
 export interface ContainerDirectorySnapshot {
   id: string;
@@ -3919,9 +3922,19 @@ export interface ContainerDirectorySnapshotOptions {
   dir: string;
   name?: string;
 }
-export interface ContainerSnapshotRestoreParams {
+export interface ContainerDirectorySnapshotRestoreParams {
   snapshot: ContainerDirectorySnapshot;
   mountPoint?: string;
+}
+export interface ContainerSnapshot {
+  id: string;
+  size: number;
+  name?: string;
+  memory: boolean;
+}
+export interface ContainerSnapshotOptions {
+  memory?: boolean;
+  name?: string;
 }
 export interface ContainerStartupOptions {
   entrypoint?: string[];
@@ -3929,7 +3942,8 @@ export interface ContainerStartupOptions {
   env?: Record<string, string>;
   hardTimeout?: number | bigint;
   labels?: Record<string, string>;
-  snapshots?: ContainerSnapshotRestoreParams[];
+  directorySnapshots?: ContainerDirectorySnapshotRestoreParams[];
+  containerSnapshot?: ContainerSnapshot;
 }
 /**
  * The **`FileSystemHandle`** interface of the File System API is an object which represents a file or directory entry.

@@ -48,8 +48,11 @@ interface Container @0x9aaceefc06523bca {
     labels @5 :List(Label);
     # Optional key-value metadata labels for metrics/observability.
 
-    snapshots @6 :List(SnapshotRestoreParams);
+    directorySnapshots @6 :List(DirectorySnapshotRestoreParams);
     # Directory snapshots to restore before the container starts.
+
+    containerSnapshot @7 :ContainerSnapshot;
+    # Full container snapshot to restore before the container starts.
   }
 
   struct Label {
@@ -57,7 +60,7 @@ interface Container @0x9aaceefc06523bca {
     value @1 :Text;
   }
 
-  struct SnapshotRestoreParams {
+  struct DirectorySnapshotRestoreParams {
     snapshot @0 :DirectorySnapshot;
     # The snapshot to restore.
 
@@ -85,6 +88,30 @@ interface Container @0x9aaceefc06523bca {
   struct SnapshotDirectoryParams {
     dir @0 :Text;
     # Directory path to snapshot.
+
+    name @1 :Text;
+    # Optional human-friendly name. Empty string means not set.
+  }
+
+  struct ContainerSnapshot {
+    # Opaque handle to a full container snapshot.
+
+    id @0 :Text;
+    # Unique identifier of the snapshot.
+
+    size @1 :UInt64;
+    # Snapshot size, in bytes.
+
+    name @2 :Text;
+    # Optional human-friendly name. Empty string means not set.
+
+    memory @3 :Bool = false;
+    # True if the snapshot includes captured container memory state.
+  }
+
+  struct SnapshotContainerParams {
+    memory @0 :Bool = false;
+    # Whether to capture container memory state.
 
     name @1 :Text;
     # Optional human-friendly name. Empty string means not set.
@@ -181,4 +208,7 @@ interface Container @0x9aaceefc06523bca {
 
   snapshotDirectory @10 SnapshotDirectoryParams -> (snapshot :DirectorySnapshot);
   # Creates a snapshot for a directory in the running container.
+
+  snapshotContainer @11 SnapshotContainerParams -> (snapshot :ContainerSnapshot);
+  # Creates a full container snapshot for the running container.
 }

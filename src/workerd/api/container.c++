@@ -32,6 +32,13 @@ kj::Maybe<kj::Path> parseRestorePath(kj::StringPtr path) {
   }
 }
 
+uint64_t validateSnapshotSize(double size) {
+  JSG_REQUIRE(std::isfinite(size) && size >= 0 &&
+          size <= static_cast<double>(jsg::MAX_SAFE_INTEGER) && std::floor(size) == size,
+      RangeError, "Snapshot size must be a non-negative integer <= Number.MAX_SAFE_INTEGER");
+  return static_cast<uint64_t>(size);
+}
+
 }  // namespace
 
 // =======================================================================================
@@ -99,14 +106,16 @@ void Container::start(jsg::Lock& js, jsg::Optional<StartupOptions> maybeOptions)
   }
 
   if (!flags.getWorkerdExperimental()) {
-    JSG_REQUIRE(options.snapshots == kj::none, Error,
+    JSG_REQUIRE(options.directorySnapshots == kj::none, Error,
         "Container snapshot restore requires the 'experimental' compatibility flag.");
+    JSG_REQUIRE(options.containerSnapshot == kj::none, Error,
+        "Container full snapshot restore requires the 'experimental' compatibility flag.");
   } else {
-    KJ_IF_SOME(snapshots, options.snapshots) {
-      auto list = req.initSnapshots(snapshots.size());
-      for (auto i: kj::indices(snapshots)) {
+    KJ_IF_SOME(directorySnapshots, options.directorySnapshots) {
+      auto list = req.initDirectorySnapshots(directorySnapshots.size());
+      for (auto i: kj::indices(directorySnapshots)) {
         auto entry = list[i];
-        auto& restore = snapshots[i];
+        auto& restore = directorySnapshots[i];
         auto& snap = restore.snapshot;
         auto effectiveRestoreDir = snap.dir.asPtr();
         KJ_IF_SOME(mp, restore.mountPoint) {
@@ -116,13 +125,9 @@ void Container::start(jsg::Lock& js, jsg::Optional<StartupOptions> maybeOptions)
         JSG_REQUIRE_NONNULL(parseRestorePath(effectiveRestoreDir), Error,
             "Directory snapshot cannot be restored to root directory.");
 
-        double size = snap.size;
-        JSG_REQUIRE(std::isfinite(size) && size >= 0 &&
-                size <= static_cast<double>(jsg::MAX_SAFE_INTEGER) && std::floor(size) == size,
-            RangeError, "Snapshot size must be a non-negative integer <= Number.MAX_SAFE_INTEGER");
         auto snapshotBuilder = entry.initSnapshot();
         snapshotBuilder.setId(snap.id);
-        snapshotBuilder.setSize(static_cast<uint64_t>(size));
+        snapshotBuilder.setSize(validateSnapshotSize(snap.size));
         snapshotBuilder.setDir(snap.dir);
         KJ_IF_SOME(name, snap.name) {
           snapshotBuilder.setName(name);
@@ -131,6 +136,16 @@ void Container::start(jsg::Lock& js, jsg::Optional<StartupOptions> maybeOptions)
           entry.setMountPoint(mp);
         }
       }
+    }
+
+    KJ_IF_SOME(containerSnapshot, options.containerSnapshot) {
+      auto builder = req.initContainerSnapshot();
+      builder.setId(containerSnapshot.id);
+      builder.setSize(validateSnapshotSize(containerSnapshot.size));
+      KJ_IF_SOME(name, containerSnapshot.name) {
+        builder.setName(name);
+      }
+      builder.setMemory(containerSnapshot.memory);
     }
   }
 
@@ -160,17 +175,46 @@ jsg::Promise<Container::DirectorySnapshot> Container::snapshotDirectory(
       .then(
           js, [](jsg::Lock& js, capnp::Response<rpc::Container::SnapshotDirectoryResults> results) {
     auto snapshot = results.getSnapshot();
-    jsg::Optional<kj::String> name = kj::none;
-    auto snapshotName = snapshot.getName();
-    if (snapshotName.size() > 0) {
-      name = kj::str(snapshotName);
-    }
-
     JSG_REQUIRE(snapshot.getSize() <= jsg::MAX_SAFE_INTEGER, RangeError,
         "Snapshot size exceeds Number.MAX_SAFE_INTEGER");
 
+    jsg::Optional<kj::String> name = kj::none;
+    if (snapshot.getName().size() > 0) {
+      name = kj::str(snapshot.getName());
+    }
+
     return Container::DirectorySnapshot{kj::str(snapshot.getId()),
       static_cast<double>(snapshot.getSize()), kj::str(snapshot.getDir()), kj::mv(name)};
+  });
+}
+
+jsg::Promise<Container::Snapshot> Container::snapshotContainer(
+    jsg::Lock& js, SnapshotOptions options) {
+  JSG_REQUIRE(
+      running, Error, "snapshotContainer() cannot be called on a container that is not running.");
+
+  auto req = rpcClient->snapshotContainerRequest();
+  req.setMemory(options.memory);
+
+  KJ_IF_SOME(name, options.name) {
+    req.setName(name);
+  }
+
+  return IoContext::current()
+      .awaitIo(js, req.send())
+      .then(
+          js, [](jsg::Lock& js, capnp::Response<rpc::Container::SnapshotContainerResults> results) {
+    auto snapshot = results.getSnapshot();
+    JSG_REQUIRE(snapshot.getSize() <= jsg::MAX_SAFE_INTEGER, RangeError,
+        "Snapshot size exceeds Number.MAX_SAFE_INTEGER");
+
+    jsg::Optional<kj::String> name = kj::none;
+    if (snapshot.getName().size() > 0) {
+      name = kj::str(snapshot.getName());
+    }
+
+    return Container::Snapshot{kj::str(snapshot.getId()), static_cast<double>(snapshot.getSize()),
+      kj::mv(name), snapshot.getMemory()};
   });
 }
 

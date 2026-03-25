@@ -77,6 +77,7 @@ class ContainerClient final: public rpc::Container::Server, public kj::Refcounte
   kj::Promise<void> setEgressHttp(SetEgressHttpContext context) override;
   kj::Promise<void> setEgressHttps(SetEgressHttpsContext context) override;
   kj::Promise<void> snapshotDirectory(SnapshotDirectoryContext context) override;
+  kj::Promise<void> snapshotContainer(SnapshotContainerContext context) override;
 
   kj::Own<ContainerClient> addRef();
 

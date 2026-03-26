@@ -436,12 +436,14 @@ compile cache).
 `Module::newCjsStyleModuleHandler<T, TypeWrapper>` is a template that creates a
 handler for CommonJS-style modules:
 
-1. Guards against re-evaluation with `EvaluateOnce` (CJS modules evaluate once).
-2. Allocates a JSG resource object of type `T` (e.g. `CommonJsModuleContext`).
-3. Compiles the source as a function via `ScriptCompiler::CompileFunction` with
+1. Allocates a JSG resource object of type `T` (e.g. `CommonJsModuleContext`).
+2. Compiles the source as a function via `ScriptCompiler::CompileFunction` with
    the JSG object as extension object (providing `module`, `exports`, `require`).
-4. Calls the compiled function.
-5. Extracts `exports` from the JSG object and sets them on the module namespace.
+3. Calls the compiled function.
+4. Extracts `exports` from the JSG object and sets them on the module namespace.
+
+Re-evaluation is prevented by V8's module status machine (`kEvaluated` prevents
+re-entry), not by application-level guards.
 
 ## Specifier Processing
 
@@ -704,10 +706,20 @@ returning a rejected promise with the cached exception.
    `TypeError` for any import attributes. This is the spec-recommended default
    for unrecognized attributes.
 
-8. **No `require(esm)` convention matching.** Unlike the legacy registry which
-   had complex `require()` return value logic (checking `__cjsUnwrapDefault`,
-   `module.exports` key, etc.), the new registry's `require()` always returns
-   the full module namespace. CJS interop is handled at the module handler level.
+8. **`require()` return value semantics (UNWRAP_DEFAULT).** When callers use the
+   `UNWRAP_DEFAULT` require option (used by `createRequire` and
+   `CommonJsModuleContext::require`), the return value depends on the module type:
+   - **User bundle ESM**: returns the module namespace (matching Node.js
+     `require(esm)` behavior), unless the module exports `__cjsUnwrapDefault`
+     as truthy (a convention used by bundlers like esbuild when transpiling CJS
+     to ESM), in which case the `default` export is returned.
+   - **Builtin ESM** (`node:assert`, `node:buffer`, etc.): returns the `default`
+     export, because workerd implements builtins as ESM that wrap CJS-style APIs
+     in a default export.
+   - **Synthetic modules** (CJS, JSON, Text, Data, WASM): returns the `default`
+     export, which is where the module's value lives (`module.exports` for CJS,
+     parsed value for JSON, etc.).
+     Without `UNWRAP_DEFAULT`, `require()` always returns the full module namespace.
 
 9. **Python modules are not yet supported.** The new registry currently throws
    `KJ_FAIL_ASSERT` for `PythonModule` content. Python support remains on the

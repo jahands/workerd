@@ -191,13 +191,11 @@ await rejects(import('%90%E8%54%C1'), {
   message: /Module not found/,
 });
 
-console.log('.................1');
 // The cjs6 module attempts to require and esm with a top-level await, which is rejected
 // following node.js' established require(esm) precedent.
 await rejects(import('cjs6'), {
   message: /^Top-level await is not supported/,
 });
-console.log('.................2');
 
 // Cannot directly require an ESM with top-level await either.
 throws(() => myRequire('tla'), {

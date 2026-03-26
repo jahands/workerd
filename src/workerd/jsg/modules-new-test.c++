@@ -1448,6 +1448,90 @@ KJ_TEST("ESM -> CJS -> require(ESM) -> static import CJS circular dependency fai
 }
 
 // ======================================================================================
+
+KJ_TEST("UNWRAP_DEFAULT returns namespace for bundle ESM, default for others") {
+  PREAMBLE([&](Lock& js) {
+    ResolveObserverImpl observer;
+    CompilationObserver compilationObserver;
+
+    ModuleBundle::BundleBuilder bundleBuilder(BASE);
+
+    // Bundle ESM with named exports (no __cjsUnwrapDefault)
+    auto esm = kj::str("export default 42; export const name = 'esm';");
+    bundleBuilder.addEsmModule("esm-mod", esm, Module::Flags::MAIN);
+
+    // Bundle ESM with __cjsUnwrapDefault convention
+    auto esmCjs = kj::str("export default 'unwrapped'; export const __cjsUnwrapDefault = true;");
+    bundleBuilder.addEsmModule("esm-cjs", esmCjs);
+
+    // JSON synthetic module
+    auto json = kj::str("{\"key\": \"value\"}");
+    bundleBuilder.addSyntheticModule(
+        "data.json", Module::newJsonModuleHandler(json.first(json.size())));
+
+    // Text synthetic module
+    auto text = kj::str("hello world");
+    bundleBuilder.addSyntheticModule(
+        "data.txt", Module::newTextModuleHandler(text.first(text.size())));
+
+    auto registry = ModuleRegistry::Builder(observer, BASE).add(bundleBuilder.finish()).finish();
+    auto attached = registry->attachToIsolate(js, compilationObserver);
+
+    // Bundle ESM without __cjsUnwrapDefault: tryResolveModuleNamespace with UnwrapDefault::YES
+    // returns the full namespace (has "default", "name" properties).
+    js.tryCatch([&] {
+      auto ns = KJ_ASSERT_NONNULL(ModuleRegistry::tryResolveModuleNamespace(js, "file:///esm-mod",
+          ResolveContext::Type::BUNDLE, ResolveContext::Source::REQUIRE, kj::none,
+          modules::UnwrapDefault::YES));
+      // The namespace should have both "default" and "name" properties.
+      auto nameVal = ns.get(js, "name");
+      KJ_ASSERT(!nameVal.isUndefined());
+      KJ_ASSERT(kj::str(nameVal) == "esm");
+      auto defaultVal = ns.get(js, "default");
+      KJ_ASSERT(!defaultVal.isUndefined());
+    }, [&](Value exception) { js.throwException(kj::mv(exception)); });
+
+    // Bundle ESM with __cjsUnwrapDefault: returns the default export.
+    js.tryCatch([&] {
+      auto result = KJ_ASSERT_NONNULL(ModuleRegistry::tryResolveModuleNamespace(js,
+          "file:///esm-cjs", ResolveContext::Type::BUNDLE, ResolveContext::Source::REQUIRE,
+          kj::none, modules::UnwrapDefault::YES));
+      // Should be the unwrapped default, not the namespace.
+      // The default is a string, so ToObject wraps it. Check via valueOf().
+      auto val = JsValue(result);
+      KJ_ASSERT(kj::str(val) == "unwrapped");
+    }, [&](Value exception) { js.throwException(kj::mv(exception)); });
+
+    // JSON synthetic module: returns the parsed value (the default export).
+    js.tryCatch([&] {
+      auto result = KJ_ASSERT_NONNULL(ModuleRegistry::tryResolveModuleNamespace(js,
+          "file:///data.json", ResolveContext::Type::BUNDLE, ResolveContext::Source::REQUIRE,
+          kj::none, modules::UnwrapDefault::YES));
+      // Should be the parsed JSON object, not the namespace.
+      KJ_ASSERT(kj::str(result.get(js, "key")) == "value");
+    }, [&](Value exception) { js.throwException(kj::mv(exception)); });
+
+    // Text synthetic module: returns the string value (the default export).
+    js.tryCatch([&] {
+      auto result = KJ_ASSERT_NONNULL(ModuleRegistry::tryResolveModuleNamespace(js,
+          "file:///data.txt", ResolveContext::Type::BUNDLE, ResolveContext::Source::REQUIRE,
+          kj::none, modules::UnwrapDefault::YES));
+      // The default is a string, wrapped in a String object by ToObject.
+      auto val = JsValue(result);
+      KJ_ASSERT(kj::str(val) == "hello world");
+    }, [&](Value exception) { js.throwException(kj::mv(exception)); });
+
+    // Without UnwrapDefault, all modules return the namespace.
+    js.tryCatch([&] {
+      auto ns = KJ_ASSERT_NONNULL(ModuleRegistry::tryResolveModuleNamespace(
+          js, "file:///data.json", ResolveContext::Type::BUNDLE, ResolveContext::Source::REQUIRE));
+      // Should have a "default" property (it's the namespace).
+      KJ_ASSERT(!ns.get(js, "default").isUndefined());
+    }, [&](Value exception) { js.throwException(kj::mv(exception)); });
+  });
+}
+
+// ======================================================================================
 KJ_TEST("Resolution occurs relative to the referrer") {
   ResolveObserver observer;
   CompilationObserver compilationObserver;

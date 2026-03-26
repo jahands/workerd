@@ -447,8 +447,9 @@ class IsolateModuleRegistry final {
                   return js.v8Ref(defaultExport);
                 }
               }
-              KJ_FAIL_REQUIRE(v8::Exception::SyntaxError,
-                  "Source phase import not available for module: ", normalizedSpecifier.getHref());
+              js.throwException(js.v8Ref(v8::Exception::SyntaxError(
+                  js.str(kj::str("Source phase import not available for module: "_kj,
+                      normalizedSpecifier.getHref())))));
             });
           }
           return js.rejectedPromise<Value>(js.v8Ref(v8::Exception::SyntaxError(js.strIntern(kj::str(
@@ -477,6 +478,11 @@ class IsolateModuleRegistry final {
     DEFAULT = 0,
     RETURN_EMPTY = 1 << 0,
     NO_TOP_LEVEL_AWAIT = 1 << 1,
+    // When set, the default export is returned instead of the module namespace.
+    // This matches Node.js require() semantics where require() returns the
+    // default export (module.exports for CJS, default export for ESM builtins,
+    // parsed value for JSON, etc.).
+    UNWRAP_DEFAULT = 1 << 2,
   };
 
   friend constexpr RequireOption operator|(RequireOption a, RequireOption b) {
@@ -492,6 +498,44 @@ class IsolateModuleRegistry final {
   // exception has been scheduled.
   v8::MaybeLocal<v8::Object> require(
       Lock& js, const ResolveContext& context, RequireOption option = RequireOption::DEFAULT) {
+    // Returns either the module namespace or, when UNWRAP_DEFAULT is set and
+    // the module is not ESM, the default export from the namespace. This matches
+    // Node.js require() semantics: require('esm') returns the namespace,
+    // require('data.json') returns the parsed value.
+    // When UNWRAP_DEFAULT is set, returns the default export for all module types
+    // except user bundle ESM, which returns the namespace (matching Node.js require(esm)
+    // behavior). Builtin ESM returns default because workerd wraps CJS-style APIs in
+    // ESM default exports. Synthetic modules (CJS, JSON, Text, etc.) return default
+    // because that's where their value lives.
+    static constexpr auto maybeUnwrapDefault =
+        [](Lock& js, v8::Local<v8::Module> module, const Module& moduleDef,
+            RequireOption option) -> v8::MaybeLocal<v8::Object> {
+      auto ns = module->GetModuleNamespace().As<v8::Object>();
+      if ((option & RequireOption::UNWRAP_DEFAULT) == RequireOption::UNWRAP_DEFAULT) {
+        // User bundle ESM returns the full namespace, matching Node.js require(esm),
+        // unless the module has __cjsUnwrapDefault set (a convention used by bundlers
+        // like esbuild when transpiling CJS to ESM), in which case we return the
+        // default export.
+        if (moduleDef.type() == Module::Type::BUNDLE && moduleDef.isEsm()) {
+          auto unwrap = ns->Get(js.v8Context(), js.strIntern("__cjsUnwrapDefault"_kj));
+          v8::Local<v8::Value> unwrapValue;
+          if (unwrap.ToLocal(&unwrapValue) && unwrapValue->BooleanValue(js.v8Isolate)) {
+            auto defaultValue = check(ns->Get(js.v8Context(), js.strIntern("default"_kj)));
+            return defaultValue.As<v8::Object>();
+          }
+          return ns;
+        }
+        // Everything else (builtins, synthetic modules) returns the default export.
+        // Note: The default export may be a primitive (e.g. Text module returns a string).
+        // We cast to v8::Object here because require() returns MaybeLocal<Object>, but
+        // callers immediately convert to JsValue. The cast is safe because v8::Local is
+        // just a pointer wrapper.
+        auto defaultValue = check(ns->Get(js.v8Context(), js.strIntern("default"_kj)));
+        return defaultValue.As<v8::Object>();
+      }
+      return ns;
+    };
+
     static constexpr auto evaluate = [](Lock& js, Entry& entry, const Url& id,
                                          const CompilationObserver& observer,
                                          const Module::Evaluator& maybeEvaluate,
@@ -522,7 +566,7 @@ class IsolateModuleRegistry final {
       // to a degree. Just like in Node.js, however, such circular dependencies
       // can still be problematic depending on how they are used.
       if (status == v8::Module::kEvaluated || status == v8::Module::kEvaluating) {
-        return module->GetModuleNamespace().As<v8::Object>();
+        return maybeUnwrapDefault(js, module, entry.module, option);
       }
 
       // Matches the require(esm) behavior implemented in Node.js, which is to
@@ -554,7 +598,7 @@ class IsolateModuleRegistry final {
           case v8::Promise::kFulfilled: {
             // This is what we want. The module namespace should be fully populated
             // and evaluated at this point.
-            return module->GetModuleNamespace().As<v8::Object>();
+            return maybeUnwrapDefault(js, module, entry.module, option);
           }
           case v8::Promise::kRejected: {
             // Oops, there was an error. We should throw it.
@@ -573,7 +617,7 @@ class IsolateModuleRegistry final {
         KJ_ASSERT(promise->State() != v8::Promise::kPending,
             "Top-level await is not supported in this context, so the module promise "
             "should never be pending");
-        return module->GetModuleNamespace().As<v8::Object>();
+        return maybeUnwrapDefault(js, module, entry.module, option);
       }
       KJ_UNREACHABLE;
     };
@@ -1034,6 +1078,11 @@ v8::MaybeLocal<std::conditional_t<IsSourcePhase, v8::Object, v8::Module>> resolv
                   return defaultExport.As<v8::Object>();
                 }
               }
+            }
+            // If require() failed with an exception (e.g. WASM compilation error),
+            // propagate that instead of masking it with the generic message below.
+            if (js.v8Isolate->HasPendingException()) {
+              return {};
             }
           }
         }
@@ -1660,7 +1709,8 @@ kj::Maybe<JsObject> ModuleRegistry::tryResolveModuleNamespace(Lock& js,
     kj::StringPtr specifier,
     ResolveContext::Type type,
     ResolveContext::Source source,
-    kj::Maybe<const Url&> maybeReferrer) {
+    kj::Maybe<const Url&> maybeReferrer,
+    UnwrapDefault unwrapDefault) {
   auto& bound = IsolateModuleRegistry::from(js.v8Isolate);
   auto url = ([&] {
     KJ_IF_SOME(referrer, maybeReferrer) {
@@ -1682,6 +1732,9 @@ kj::Maybe<JsObject> ModuleRegistry::tryResolveModuleNamespace(Lock& js,
   // in synchronously required modules.
   if (source == ResolveContext::Source::REQUIRE) {
     option = option | IsolateModuleRegistry::RequireOption::NO_TOP_LEVEL_AWAIT;
+  }
+  if (unwrapDefault == UnwrapDefault::YES) {
+    option = option | IsolateModuleRegistry::RequireOption::UNWRAP_DEFAULT;
   }
 
   auto ns = bound.require(js, context, option);

@@ -631,6 +631,12 @@ class ModuleBundle {
 // and owned by a single Worker instance. In production, however, a
 // single ModuleRegistry instance may be shared by multiple replicas
 // of a Worker and therefore must be AtomicRefcounted.
+
+// When passed to tryResolveModuleNamespace, controls whether non-ESM
+// (synthetic) modules return the default export instead of the full
+// module namespace. Matches Node.js require() semantics.
+WD_STRONG_BOOL(UnwrapDefault);
+
 class ModuleRegistry final: public kj::AtomicRefcounted, public ModuleRegistryBase {
  private:
   enum BundleIndices { kBundle, kBuiltin, kBuiltinOnly, kFallback, kBundleCount };
@@ -710,7 +716,8 @@ class ModuleRegistry final: public kj::AtomicRefcounted, public ModuleRegistryBa
       kj::StringPtr specifier,
       ResolveContext::Type type = ResolveContext::Type::BUNDLE,
       ResolveContext::Source source = ResolveContext::Source::INTERNAL,
-      kj::Maybe<const Url&> maybeReferrer = kj::none);
+      kj::Maybe<const Url&> maybeReferrer = kj::none,
+      UnwrapDefault unwrapDefault = UnwrapDefault::NO);
 
   // The constructor is public because kj::heap requires is to be. Do not
   // use the constructor directly. Use the ModuleRegistry::Builder

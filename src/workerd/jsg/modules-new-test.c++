@@ -1406,6 +1406,48 @@ KJ_TEST("Recursively require ESM from CJS required from ESM fails as expected (s
 }
 
 // ======================================================================================
+
+KJ_TEST("ESM -> CJS -> require(ESM) -> static import CJS circular dependency fails gracefully") {
+  // This tests a specific crash scenario: when a CJS module (b) is mid-evaluation
+  // (kEvaluating), and it require()s an ESM (c) that statically imports the same
+  // CJS module (b), V8's InnerModuleEvaluation would call Module::Evaluate on
+  // the kEvaluating synthetic module, hitting a CHECK crash. The resolveModuleCallback
+  // kEvaluating guard prevents this by rejecting the circular dependency at
+  // instantiation time.
+  PREAMBLE([&](Lock& js) {
+    ResolveObserverImpl observer;
+    CompilationObserver compilationObserver;
+
+    ModuleBundle::BundleBuilder bundleBuilder(BASE);
+
+    // a.js (ESM) -> imports b (CJS)
+    auto a = kj::str("import b from 'b'; export default b;");
+    bundleBuilder.addEsmModule("a", a, Module::Flags::MAIN);
+
+    // b (CJS) -> require('c') which is an ESM that imports b back
+    auto bSource = kj::str("exports = require('c');");
+    bundleBuilder.addSyntheticModule(
+        "b", Module::newCjsStyleModuleHandler<TestType, TestIsolate_TypeWrapper>(bSource, "b"_kj));
+
+    // c.js (ESM) -> imports b (CJS) — creates the circular dependency
+    auto c = kj::str("import b from 'b'; export default b;");
+    bundleBuilder.addEsmModule("c", c);
+
+    auto registry = ModuleRegistry::Builder(observer, BASE).add(bundleBuilder.finish()).finish();
+
+    auto attached = registry->attachToIsolate(js, compilationObserver);
+
+    js.tryCatch([&] {
+      ModuleRegistry::resolve(js, "file:///a", "default"_kjc);
+      JSG_FAIL_REQUIRE(Error, "Should have thrown");
+    }, [&](Value exception) {
+      auto str = kj::str(exception.getHandle(js));
+      KJ_ASSERT(str == "TypeError: Circular dependency when resolving module: b");
+    });
+  });
+}
+
+// ======================================================================================
 KJ_TEST("Resolution occurs relative to the referrer") {
   ResolveObserver observer;
   CompilationObserver compilationObserver;

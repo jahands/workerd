@@ -170,7 +170,7 @@ class EsModule final: public Module {
       // since we're either consuming cached data or not using any options at all.
       KJ_ASSERT(v8::ScriptCompiler::CompileOptionsIsValid(options));
       if (!v8::ScriptCompiler::CompileModule(js.v8Isolate, &source, options).ToLocal(&module)) {
-        return v8::MaybeLocal<v8::Module>();
+        return {};
       }
     }
 
@@ -220,8 +220,11 @@ class EsModule final: public Module {
       const CompilationObserver& observer,
       const Evaluator& maybeEvaluate) const override {
     if (!ensureInstantiated(js, module, observer, *this)) {
-      return v8::MaybeLocal<v8::Value>();
-    };
+      if (!js.v8Isolate->HasPendingException()) {
+        js.v8Isolate->ThrowError(js.str("Failed to instantiate module"_kj));
+      }
+      return {};
+    }
 
     KJ_IF_SOME(result, maybeEvaluate(js, *this, module, observer)) {
       return js.wrapSimplePromise(kj::mv(result));
@@ -279,19 +282,15 @@ class SyntheticModule final: public Module {
       Lock& js, v8::Local<v8::Module> module, const CompilationObserver& observer) const override {
     // The return value will be a resolved promise.
     v8::Local<v8::Promise::Resolver> resolver;
-
     if (!v8::Promise::Resolver::New(js.v8Context()).ToLocal(&resolver)) {
-      return v8::MaybeLocal<v8::Value>();
+      return {};
     }
 
     ModuleNamespace ns(module, namedExports);
-    if (!callback(js, id(), ns, observer)) {
+    if (!callback(js, id(), ns, observer) ||
+        resolver->Resolve(js.v8Context(), js.v8Undefined()).IsNothing()) {
       // An exception should already be scheduled with the isolate
-      return v8::MaybeLocal<v8::Value>();
-    }
-
-    if (resolver->Resolve(js.v8Context(), js.v8Undefined()).IsNothing()) {
-      return v8::MaybeLocal<v8::Value>();
+      return {};
     }
 
     return resolver->GetPromise();
@@ -302,9 +301,11 @@ class SyntheticModule final: public Module {
       const CompilationObserver& observer,
       const Evaluator& maybeEvaluate) const override {
     if (!ensureInstantiated(js, module, observer, *this)) {
-      return v8::MaybeLocal<v8::Value>();
+      if (!js.v8Isolate->HasPendingException()) {
+        js.v8Isolate->ThrowError(js.str("Failed to instantiate module"_kj));
+      }
+      return {};
     }
-
     // If this synthetic module is marked with Flags::EVAL, and the evalCallback
     // is specified, then we defer evaluation to the given callback.
     if (isEval()) {
@@ -312,8 +313,7 @@ class SyntheticModule final: public Module {
         return js.wrapSimplePromise(kj::mv(result));
       }
     }
-
-    return actuallyEvaluate(js, module, observer);
+    return module->Evaluate(js.v8Context());
   }
 
   // Marked mutable because kj::Function::operator() is non-const, but evaluation
@@ -415,6 +415,11 @@ class IsolateModuleRegistry final {
       };
 
       auto handleFoundModule = [&](Entry& found) -> Promise<Value> {
+        auto v8Module = found.key.getHandle(js);
+        if (v8Module->GetStatus() == v8::Module::kErrored) {
+          return js.rejectedPromise<Value>(v8Module->GetException());
+        }
+
         auto evaluatePromise = evaluate(js, found, getObserver(), inner.getEvaluator());
         auto isWasm = found.module.isWasm();
 
@@ -469,9 +474,17 @@ class IsolateModuleRegistry final {
   }
 
   enum class RequireOption {
-    DEFAULT,
-    RETURN_EMPTY,
+    DEFAULT = 0,
+    RETURN_EMPTY = 1 << 0,
+    NO_TOP_LEVEL_AWAIT = 1 << 1,
   };
+
+  friend constexpr RequireOption operator|(RequireOption a, RequireOption b) {
+    return static_cast<RequireOption>(static_cast<int>(a) | static_cast<int>(b));
+  }
+  friend constexpr RequireOption operator&(RequireOption a, RequireOption b) {
+    return static_cast<RequireOption>(static_cast<int>(a) & static_cast<int>(b));
+  }
 
   // Used to implement the synchronous dynamic import of modules in support of APIs
   // like the CommonJS require. Returns the instantiated/evaluated module namespace.
@@ -481,7 +494,8 @@ class IsolateModuleRegistry final {
       Lock& js, const ResolveContext& context, RequireOption option = RequireOption::DEFAULT) {
     static constexpr auto evaluate = [](Lock& js, Entry& entry, const Url& id,
                                          const CompilationObserver& observer,
-                                         const Module::Evaluator& maybeEvaluate) {
+                                         const Module::Evaluator& maybeEvaluate,
+                                         RequireOption option) -> v8::MaybeLocal<v8::Object> {
       auto module = entry.key.getHandle(js);
       auto status = module->GetStatus();
 
@@ -511,37 +525,55 @@ class IsolateModuleRegistry final {
         return module->GetModuleNamespace().As<v8::Object>();
       }
 
+      // Matches the require(esm) behavior implemented in Node.js, which is to
+      // throw if the module being imported uses top-level await.
+      if ((option & RequireOption::NO_TOP_LEVEL_AWAIT) == RequireOption::NO_TOP_LEVEL_AWAIT) {
+        // We have to ensure the module is instantiated before we can check for top-level await.
+        JSG_REQUIRE(ensureInstantiated(js, module, observer, entry.module), Error,
+            "Failed to instantiate module: ", id);
+        JSG_REQUIRE(!module->IsGraphAsync(), Error,
+            "Top-level await is not supported in this context for module: ", id);
+      }
+
       // Evaluate the module and grab the default export from the module namespace.
       auto promise =
           check(entry.module.evaluate(js, module, observer, maybeEvaluate)).As<v8::Promise>();
 
       // Run the microtasks to ensure that any promises that happen to be scheduled
-      // during the evaluation of the top-level scope have a chance to be settled,
-      js.runMicrotasks();
+      // during the evaluation of the top-level scope have a chance to be settled.
+      // We only pump the microtasks queue if NP_TOP_LEVEL_AWAIT is not set.
+      if ((option & RequireOption::NO_TOP_LEVEL_AWAIT) != RequireOption::NO_TOP_LEVEL_AWAIT) {
+        js.runMicrotasks();
 
-      static const auto kTopLevelAwaitError =
-          "Use of top-level await in a synchronously required module is restricted to "
-          "promises that are resolved synchronously. This includes any top-level awaits "
-          "in the entrypoint module for a worker."_kj;
+        static const auto kTopLevelAwaitError =
+            "Use of top-level await in a synchronously required module is restricted to "
+            "promises that are resolved synchronously. This includes any top-level awaits "
+            "in the entrypoint module for a worker."_kj;
 
-      switch (promise->State()) {
-        case v8::Promise::kFulfilled: {
-          // This is what we want. The module namespace should be fully populated
-          // and evaluated at this point.
-          return module->GetModuleNamespace().As<v8::Object>();
+        switch (promise->State()) {
+          case v8::Promise::kFulfilled: {
+            // This is what we want. The module namespace should be fully populated
+            // and evaluated at this point.
+            return module->GetModuleNamespace().As<v8::Object>();
+          }
+          case v8::Promise::kRejected: {
+            // Oops, there was an error. We should throw it.
+            js.throwException(JsValue(promise->Result()));
+            break;
+          }
+          case v8::Promise::kPending: {
+            // The module evaluation could not complete in a single drain of the
+            // microtask queue. This means we've got a pending promise somewhere
+            // that is being awaited preventing the module from being ready to
+            // go. We can't have that! Throw! Throw!
+            JSG_FAIL_REQUIRE(Error, kTopLevelAwaitError, " Specifier: \"", id, "\".");
+          }
         }
-        case v8::Promise::kRejected: {
-          // Oops, there was an error. We should throw it.
-          js.throwException(JsValue(promise->Result()));
-          break;
-        }
-        case v8::Promise::kPending: {
-          // The module evaluation could not complete in a single drain of the
-          // microtask queue. This means we've got a pending promise somewhere
-          // that is being awaited preventing the module from being ready to
-          // go. We can't have that! Throw! Throw!
-          JSG_FAIL_REQUIRE(Error, kTopLevelAwaitError, " Specifier: \"", id, "\".");
-        }
+      } else {
+        KJ_ASSERT(promise->State() != v8::Promise::kPending,
+            "Top-level await is not supported in this context, so the module promise "
+            "should never be pending");
+        return module->GetModuleNamespace().As<v8::Object>();
       }
       KJ_UNREACHABLE;
     };
@@ -561,22 +593,22 @@ class IsolateModuleRegistry final {
       // Do we already have a cached module for this context?
       KJ_IF_SOME(found, lookupCache.find<kj::HashIndex<ContextCallbacks>>(context)) {
         return evaluate(
-            js, found, context.normalizedSpecifier, getObserver(), inner.getEvaluator());
+            js, found, context.normalizedSpecifier, getObserver(), inner.getEvaluator(), option);
       }
 
       KJ_IF_SOME(found, resolveWithCaching(js, context)) {
         return evaluate(
-            js, found, context.normalizedSpecifier, getObserver(), inner.getEvaluator());
+            js, found, context.normalizedSpecifier, getObserver(), inner.getEvaluator(), option);
       }
 
-      if (option == RequireOption::RETURN_EMPTY) {
-        return v8::MaybeLocal<v8::Object>();
+      if ((option & RequireOption::RETURN_EMPTY) == RequireOption::RETURN_EMPTY) {
+        return {};
       }
       JSG_FAIL_REQUIRE(Error, kj::str("Module not found: ", context.normalizedSpecifier.getHref()));
-    }, [&](Value exception) {
+    }, [&](Value exception) -> v8::MaybeLocal<v8::Object> {
       // Use the isolate to rethrow the exception here instead of using the lock.
       js.v8Isolate->ThrowException(exception.getHandle(js));
-      return v8::MaybeLocal<v8::Object>();
+      return {};
     });
   }
 
@@ -678,22 +710,20 @@ class IsolateModuleRegistry final {
 
 v8::MaybeLocal<v8::Value> SyntheticModule::evaluationSteps(
     v8::Local<v8::Context> context, v8::Local<v8::Module> module) {
-  try {
-    auto& js = Lock::current();
+  auto& js = Lock::current();
+  KJ_TRY {
     auto& registry = IsolateModuleRegistry::from(js.v8Isolate);
-
     KJ_IF_SOME(found, registry.lookup(js, module)) {
-      return found.module.evaluate(
-          js, module, registry.getObserver(), registry.inner.getEvaluator());
+      return found.module.actuallyEvaluate(js, module, registry.getObserver());
     }
-
-    // This case really should never actually happen but we handle it anyway.
     KJ_LOG(ERROR, "Synthetic module not found in registry for evaluation");
-
     js.v8Isolate->ThrowError(js.str("Requested module does not exist"_kj));
-    return v8::MaybeLocal<v8::Value>();
-  } catch (...) {
-    kj::throwFatalException(kj::getCaughtExceptionAsKj());
+    return {};
+  }
+  KJ_CATCH(exception) {
+    auto ex = js.exceptionToJsValue(kj::mv(exception));
+    js.v8Isolate->ThrowException(ex.getHandle(js));
+    return {};
   }
 }
 
@@ -778,13 +808,13 @@ v8::MaybeLocal<v8::Promise> dynamicImportModuleCallback(v8::Local<v8::Context> c
     v8::Local<v8::Promise::Resolver> resolver;
     if (!v8::Promise::Resolver::New(js.v8Context()).ToLocal(&resolver) ||
         resolver->Reject(js.v8Context(), error).IsNothing()) {
-      return v8::MaybeLocal<v8::Promise>();
+      return {};
     }
     return resolver->GetPromise();
   };
 
   auto& registry = IsolateModuleRegistry::from(js.v8Isolate);
-  try {
+  KJ_TRY {
     return js.tryCatch([&]() -> v8::MaybeLocal<v8::Promise> {
       auto spec = specifierToString(js, specifier);
 
@@ -824,9 +854,8 @@ v8::MaybeLocal<v8::Promise> dynamicImportModuleCallback(v8::Local<v8::Context> c
       }
 
       KJ_IF_SOME(url, referrer.tryResolve(spec.asPtr())) {
-        auto normalized = url.clone(Url::EquivalenceOption::NORMALIZE_PATH);
-        return registry.dynamicResolve(
-            js, kj::mv(normalized), kj::mv(referrer), spec, isSourcePhase);
+        return registry.dynamicResolve(js, url.clone(Url::EquivalenceOption::NORMALIZE_PATH),
+            kj::mv(referrer), spec, isSourcePhase);
       }
 
       // We were not able to parse the specifier. We'll return a rejected promise.
@@ -838,8 +867,10 @@ v8::MaybeLocal<v8::Promise> dynamicImportModuleCallback(v8::Local<v8::Context> c
       // anyway.
       return rejected(js, jsg::JsValue(exception.getHandle(js)));
     });
-  } catch (...) {
-    kj::throwFatalException(kj::getCaughtExceptionAsKj());
+  }
+  KJ_CATCH(exception) {
+    auto ex = js.exceptionToJsValue(kj::mv(exception));
+    return rejected(js, ex.getHandle(js));
   }
 }
 
@@ -932,8 +963,21 @@ v8::MaybeLocal<std::conditional_t<IsSourcePhase, v8::Object, v8::Module>> resolv
           .referrerNormalizedSpecifier = referrerUrl,
           .rawSpecifier = processSpec.asPtr(),
         };
-
-        return registry.resolve(js, resolveContext);
+        auto maybeResolved = registry.resolve(js, resolveContext);
+        v8::Local<v8::Module> resolved;
+        if (!maybeResolved.ToLocal(&resolved)) {
+          return {};
+        }
+        if (resolved->GetStatus() == v8::Module::kErrored) {
+          js.throwException(JsValue(resolved->GetException()));
+          return {};
+        }
+        if (resolved->GetStatus() == v8::Module::kEvaluating) {
+          js.throwException(
+              js.typeError(kj::str("Circular dependency when resolving module: ", spec)));
+          return {};
+        }
+        return resolved;
       }
     }
 
@@ -949,11 +993,22 @@ v8::MaybeLocal<std::conditional_t<IsSourcePhase, v8::Object, v8::Module>> resolv
       };
 
       auto maybeResolved = registry.resolve(js, resolveContext);
-      if (maybeResolved.IsEmpty()) {
-        return v8::MaybeLocal<ReturnType>();
+
+      v8::Local<v8::Module> resolved;
+      if (!maybeResolved.ToLocal(&resolved)) {
+        return {};
       }
 
-      auto resolved = check(maybeResolved);
+      // If the resolved module is in an errored state, we will rethrow the same exception here.
+      if (resolved->GetStatus() == v8::Module::kErrored) {
+        js.throwException(JsValue(resolved->GetException()));
+        return {};
+      }
+      if (resolved->GetStatus() == v8::Module::kEvaluating) {
+        js.throwException(
+            js.typeError(kj::str("Circular dependency when resolving module: ", spec)));
+        return v8::MaybeLocal<ReturnType>();
+      }
 
       if constexpr (!IsSourcePhase) {
         return resolved;
@@ -983,20 +1038,21 @@ v8::MaybeLocal<std::conditional_t<IsSourcePhase, v8::Object, v8::Module>> resolv
           }
         }
         js.throwException(js.v8Ref(v8::Exception::SyntaxError(
-            js.strIntern(kj::str("Source phase import not available for module: "_kj, spec)))));
-        return v8::MaybeLocal<ReturnType>();
+            js.str(kj::str("Source phase import not available for module: "_kj, spec)))));
+        return {};
       }
+      KJ_UNREACHABLE;
     }
 
     js.throwException(js.error(kj::str("Invalid module specifier: "_kj, specifier)));
-    return v8::MaybeLocal<ReturnType>();
+    return {};
   }, [&](Value exception) -> v8::MaybeLocal<ReturnType> {
     // If there are any synchronously thrown exceptions, we want to catch them
     // here and convert them into a rejected promise. The only exception are
     // fatal cases where the isolate is terminating which won't make it here
     // anyway.
     js.v8Isolate->ThrowException(exception.getHandle(js));
-    return v8::MaybeLocal<ReturnType>();
+    return {};
   });
 }
 
@@ -1621,7 +1677,14 @@ kj::Maybe<JsObject> ModuleRegistry::tryResolveModuleNamespace(Lock& js,
     .rawSpecifier = specifier,
   };
   v8::TryCatch tryCatch(js.v8Isolate);
-  auto ns = bound.require(js, context, IsolateModuleRegistry::RequireOption::RETURN_EMPTY);
+  auto option = IsolateModuleRegistry::RequireOption::RETURN_EMPTY;
+  // Following the behavior of Node.js' require(esm) implementation, we disallow top-level await
+  // in synchronously required modules.
+  if (source == ResolveContext::Source::REQUIRE) {
+    option = option | IsolateModuleRegistry::RequireOption::NO_TOP_LEVEL_AWAIT;
+  }
+
+  auto ns = bound.require(js, context, option);
   if (tryCatch.HasCaught()) {
     tryCatch.ReThrow();
     throw JsExceptionThrown();

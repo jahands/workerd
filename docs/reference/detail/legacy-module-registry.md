@@ -3,7 +3,8 @@
 Reference for reasoning about the original (legacy) module registry implementation,
 how it interfaces with V8's module APIs, and how modules flow from config through
 compilation to evaluation. For V8 module internals, see
-[v8-module-internals.md](v8-module-internals.md).
+[v8-module-internals.md](v8-module-internals.md). For the new replacement
+implementation, see [new-module-registry.md](new-module-registry.md).
 
 ## Source Files
 

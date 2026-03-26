@@ -1,7 +1,11 @@
 # V8 Module System Internals
 
 Reference for reasoning about V8's module lifecycle, binding resolution, and evaluation
-semantics. All file paths are relative to the V8 source root
+semantics. For how workerd interfaces with these V8 APIs, see
+[new-module-registry.md](new-module-registry.md) (current implementation) and
+[legacy-module-registry.md](legacy-module-registry.md) (legacy implementation).
+
+All file paths are relative to the V8 source root
 (`external/+http_archive+v8/`). Line numbers are approximate and may drift across V8
 versions.
 

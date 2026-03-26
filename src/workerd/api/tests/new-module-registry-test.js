@@ -7,6 +7,7 @@ import {
   ok,
   rejects,
   strictEqual,
+  throws,
   deepStrictEqual,
 } from 'assert'; // Intentionally omit the 'node:' prefix
 import { foo, default as def } from 'foo';
@@ -188,6 +189,19 @@ await rejects(import('%E8%90%C1%54'), {
 });
 await rejects(import('%90%E8%54%C1'), {
   message: /Module not found/,
+});
+
+console.log('.................1');
+// The cjs6 module attempts to require and esm with a top-level await, which is rejected
+// following node.js' established require(esm) precedent.
+await rejects(import('cjs6'), {
+  message: /^Top-level await is not supported/,
+});
+console.log('.................2');
+
+// Cannot directly require an ESM with top-level await either.
+throws(() => myRequire('tla'), {
+  message: /^Top-level await is not supported/,
 });
 
 // Verify that a module is unable to perform IO operations at the top level, even if

@@ -13,6 +13,7 @@ export const SHOULD_SNAPSHOT_TO_DISK = MetadataReader.shouldSnapshotToDisk();
 export const IS_CREATING_BASELINE_SNAPSHOT =
   MetadataReader.isCreatingBaselineSnapshot();
 export const IS_EW_VALIDATING = ArtifactBundler.isEwValidating();
+export const IS_DYNAMIC_WORKER = ArtifactBundler.isDynamicWorker();
 export const IS_CREATING_SNAPSHOT = IS_EW_VALIDATING || SHOULD_SNAPSHOT_TO_DISK;
 
 // There are two validations that we perform. The first one runs without a _bundled_ memory snapshot

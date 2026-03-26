@@ -674,16 +674,6 @@ impl From<u64> for ConstantValue {
     }
 }
 
-/// Options for [`PropertyKind::Instance`] properties.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct InstancePropertyOptions {
-    /// When `true`, the getter is called once on first access and the result is
-    /// cached, replacing the accessor with a plain data property. Lazy properties
-    /// are always read-only; `#[jsg_instance_property(lazy)]` enforces this at
-    /// compile time.
-    pub lazy: bool,
-}
-
 /// Where a [`Member::Property`] is attached on the JavaScript object.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PropertyKind {
@@ -691,9 +681,12 @@ pub enum PropertyKind {
     /// overridable by subclasses.
     Prototype,
     /// As an own property on every instance. Directly enumerable;
-    /// not overridable by subclasses. See [`InstancePropertyOptions`] for the
-    /// `lazy` flag.
-    Instance(InstancePropertyOptions),
+    /// not overridable by subclasses.
+    ///
+    /// TODO: lazy instance properties (C++ `JSG_LAZY_INSTANCE_PROPERTY`) are not yet
+    /// supported — V8's `SetLazyDataProperty` requires an `AccessorNameGetterCallback`
+    /// ABI incompatible with Rust's `FunctionCallbackInfo`-style callbacks.
+    Instance,
     /// Registered under a unique symbol on the prototype. Invisible to normal
     /// enumeration and string-key lookup; surfaced by `node:util` `inspect()`.
     Inspect,
@@ -708,8 +701,7 @@ pub enum Member {
         callback: unsafe extern "C" fn(*mut v8::ffi::FunctionCallbackInfo),
     },
     /// A property accessor with configurable placement. `setter_callback = None`
-    /// makes the property read-only; `Inspect` and lazy `Instance` properties are
-    /// always read-only regardless.
+    /// makes the property read-only; `Inspect` properties are always read-only.
     Property {
         name: String,
         kind: PropertyKind,

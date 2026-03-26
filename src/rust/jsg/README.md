@@ -223,67 +223,76 @@ impl Greeting {
 
 ## Properties
 
-Three macros expose accessor properties on resource types.
+Two macros expose accessor properties on resource types: `#[jsg_property]` for prototype and
+instance properties, and `#[jsg_inspect_property]` for debug-only symbol-keyed properties.
 
-### `#[jsg_prototype_property]`
+### `#[jsg_property(placement [, name = "..."] [, readonly])]`
 
-A getter (and optional setter) on the resource **prototype**. Not directly enumerable — `Object.keys()` is empty, but `"prop" in obj` is `true`. Can be overridden by subclasses.
+Registers a getter (and optional setter) as a JavaScript property. The `placement` argument is
+required and must be either `prototype` or `instance`:
+
+- **`prototype`**: property lives on the prototype chain. Not directly enumerable
+  (`Object.keys()` is empty), but `"prop" in obj` is `true` and subclasses can override it.
+  Equivalent to C++ `JSG_PROTOTYPE_PROPERTY` / `JSG_READONLY_PROTOTYPE_PROPERTY`.
+- **`instance`**: own property on every instance. `Object.keys()` includes it,
+  `hasOwnProperty()` returns `true`, not overridable by subclasses.
+  Equivalent to C++ `JSG_INSTANCE_PROPERTY` / `JSG_READONLY_INSTANCE_PROPERTY`.
+  > Prefer `prototype` in almost all cases — own-property accessors inhibit minor-GC
+  > collection and some V8 optimisations.
+
+**Optional arguments:**
+- `name = "..."` — overrides the JS property name (default: `snake_case` → `camelCase` after
+  stripping a `get_`/`set_` prefix).
+- `readonly` — compile-time check that no matching `set_*` method is also annotated.
+
+**Setter detection**: Methods whose Rust name starts with `set_` are registered as the setter.
+Omitting a setter (or using `readonly`) makes the property read-only. In strict mode, an
+assignment to a read-only property throws `TypeError`.
 
 ```rust
-use std::cell::Cell;
-use jsg_macros::{jsg_resource, jsg_prototype_property};
+use std::cell::{Cell, RefCell};
+use jsg_macros::{jsg_resource, jsg_property};
 
 #[jsg_resource]
 struct Counter { value: Cell<f64> }
 
 #[jsg_resource]
 impl Counter {
-    #[jsg_prototype_property]               // JS name: "value"  (get_ stripped, camelCased)
+    // Prototype property — read/write (getter + setter pair).
+    #[jsg_property(prototype)]
     pub fn get_value(&self) -> jsg::Number { jsg::Number::new(self.value.get()) }
 
-    #[jsg_prototype_property]               // setter detected from set_ prefix
+    #[jsg_property(prototype)]
     pub fn set_value(&self, v: jsg::Number) { self.value.set(v.value()); }
 
-    #[jsg_prototype_property]               // read-only — no matching set_label
+    // Prototype property — read-only (explicit `readonly`, no setter).
+    #[jsg_property(prototype, readonly)]
     pub fn get_label(&self) -> String { "counter".into() }
 
-    #[jsg_prototype_property(name = "max")] // explicit JS name override
+    // Prototype property — explicit JS name override.
+    #[jsg_property(prototype, name = "max")]
     pub fn get_maximum(&self) -> jsg::Number { jsg::Number::new(1000.0) }
+
+    // Instance (own) property — read/write.
+    #[jsg_property(instance)]
+    pub fn get_id(&self) -> String { "tok".into() }
+
+    #[jsg_property(instance)]
+    pub fn set_id(&self, _v: String) { }
+
+    // Instance property — read-only with name override.
+    #[jsg_property(instance, name = "shortId", readonly)]
+    pub fn get_prefix(&self) -> String { "tok".into() }
 }
+// JS: Object.keys(counter)            // ["id", "shortId"]  (instance props only)
+//     counter.hasOwnProperty("value") // false (prototype)
+//     counter.hasOwnProperty("id")    // true  (instance)
+//     "value" in counter              // true
 ```
 
-### `#[jsg_instance_property]`
-
-A getter (and optional setter) as an **own property** on every instance. Directly enumerable — `Object.keys()` includes it, `hasOwnProperty()` returns `true`. Cannot be overridden by subclasses.
-
-> Prefer `#[jsg_prototype_property]` in almost all cases.
-
-Add `lazy` to cache the getter result after first access. Lazy properties are always read-only.
-
-```rust
-use std::cell::RefCell;
-use jsg_macros::{jsg_resource, jsg_instance_property};
-
-#[jsg_resource]
-struct Token { id: RefCell<String> }
-
-#[jsg_resource]
-impl Token {
-    #[jsg_instance_property]                    // read/write own property
-    pub fn get_id(&self) -> String { self.id.borrow().clone() }
-
-    #[jsg_instance_property]
-    pub fn set_id(&self, v: String) { *self.id.borrow_mut() = v; }
-
-    #[jsg_instance_property(lazy)]              // read-only, cached after first access
-    pub fn get_metadata(&self) -> String { expensive_computation() }
-
-    #[jsg_instance_property(name = "shortId")]  // explicit JS name override
-    pub fn get_prefix(&self) -> String { self.id.borrow()[..4].to_owned() }
-}
-// JS: Object.keys(token) // ["id", "metadata", "shortId"]
-//     token.hasOwnProperty("id") // true
-```
+> **TODO**: Lazy instance properties (C++ `JSG_LAZY_INSTANCE_PROPERTY`) are not yet supported.
+> V8's `SetLazyDataProperty` requires an `AccessorNameGetterCallback` ABI incompatible with
+> Rust's `FunctionCallbackInfo`-style callbacks.
 
 ### `#[jsg_inspect_property]`
 

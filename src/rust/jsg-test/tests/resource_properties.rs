@@ -2,7 +2,7 @@
 // Licensed under the Apache 2.0 license found in the LICENSE file or at:
 //     https://opensource.org/licenses/Apache-2.0
 
-//! Tests for `#[jsg_prototype_property]`, `#[jsg_instance_property]`, and
+//! Tests for `#[jsg_property(prototype)]`, `#[jsg_property(instance)]`, and
 //! `#[jsg_inspect_property]`.
 
 use std::cell::Cell;
@@ -11,9 +11,8 @@ use std::cell::RefCell;
 use jsg::Number;
 use jsg::ToJS;
 use jsg_macros::jsg_inspect_property;
-use jsg_macros::jsg_instance_property;
 use jsg_macros::jsg_method;
-use jsg_macros::jsg_prototype_property;
+use jsg_macros::jsg_property;
 use jsg_macros::jsg_resource;
 use jsg_macros::jsg_static_constant;
 
@@ -31,18 +30,18 @@ struct Counter {
 #[jsg_resource]
 impl Counter {
     // Read/write prototype property — detected from get_/set_ prefix.
-    #[jsg_prototype_property]
+    #[jsg_property(prototype)]
     pub fn get_value(&self) -> Number {
         Number::new(self.value.get())
     }
 
-    #[jsg_prototype_property]
+    #[jsg_property(prototype)]
     pub fn set_value(&self, v: Number) {
         self.value.set(v.value());
     }
 
     // Read-only prototype property (no matching set_).
-    #[jsg_prototype_property]
+    #[jsg_property(prototype, readonly)]
     pub fn get_label(&self) -> String {
         self.label.borrow().clone()
     }
@@ -86,18 +85,18 @@ struct Token {
 
 #[jsg_resource]
 impl Token {
-    #[jsg_instance_property]
+    #[jsg_property(instance)]
     pub fn get_id(&self) -> String {
         self.id.borrow().clone()
     }
 
-    #[jsg_instance_property]
+    #[jsg_property(instance)]
     pub fn set_id(&self, v: String) {
         *self.id.borrow_mut() = v;
     }
 
     // Read-only instance property.
-    #[jsg_instance_property]
+    #[jsg_property(instance, readonly)]
     pub fn get_kind(&self) -> String {
         self.kind.clone()
     }
@@ -121,17 +120,17 @@ struct MultiWord {
 
 #[jsg_resource]
 impl MultiWord {
-    #[jsg_prototype_property]
+    #[jsg_property(prototype)]
     pub fn get_first_name(&self) -> String {
         self.first_name.borrow().clone()
     }
 
-    #[jsg_prototype_property]
+    #[jsg_property(prototype)]
     pub fn set_first_name(&self, v: String) {
         *self.first_name.borrow_mut() = v;
     }
 
-    #[jsg_prototype_property]
+    #[jsg_property(prototype, readonly)]
     pub fn get_last_name(&self) -> String {
         self.last_name.borrow().clone()
     }
@@ -154,12 +153,12 @@ struct ExplicitName {
 
 #[jsg_resource]
 impl ExplicitName {
-    #[jsg_prototype_property(name = "myValue")]
+    #[jsg_property(prototype, name = "myValue")]
     pub fn get_something(&self) -> Number {
         Number::new(self.x.get())
     }
 
-    #[jsg_prototype_property(name = "myValue")]
+    #[jsg_property(prototype, name = "myValue")]
     pub fn set_something(&self, v: Number) {
         self.x.set(v.value());
     }
@@ -184,12 +183,12 @@ struct MaybeHolder {
 
 #[jsg_resource]
 impl MaybeHolder {
-    #[jsg_prototype_property]
+    #[jsg_property(prototype)]
     pub fn get_value(&self) -> Option<Number> {
         self.inner.get().map(Number::new)
     }
 
-    #[jsg_prototype_property]
+    #[jsg_property(prototype)]
     pub fn set_value(&self, v: Number) {
         self.inner.set(Some(v.value()));
     }
@@ -928,22 +927,22 @@ struct Mixed {
 
 #[jsg_resource]
 impl Mixed {
-    #[jsg_prototype_property]
+    #[jsg_property(prototype)]
     pub fn get_proto_val(&self) -> Number {
         Number::new(self.proto_val.get())
     }
 
-    #[jsg_prototype_property]
+    #[jsg_property(prototype)]
     pub fn set_proto_val(&self, v: Number) {
         self.proto_val.set(v.value());
     }
 
-    #[jsg_instance_property]
+    #[jsg_property(instance)]
     pub fn get_instance_val(&self) -> String {
         self.instance_val.borrow().clone()
     }
 
-    #[jsg_instance_property]
+    #[jsg_property(instance)]
     pub fn set_instance_val(&self, v: String) {
         *self.instance_val.borrow_mut() = v;
     }
@@ -1007,6 +1006,627 @@ fn mixed_both_properties_writable() {
         let iv: String = ctx.eval(lock, "m.instanceVal").unwrap();
         assert!((pv.value() - 9.0).abs() < f64::EPSILON);
         assert_eq!(iv, "new");
+        Ok(())
+    });
+}
+
+// =============================================================================
+// Combination matrix: every jsg_property flag permutation
+//
+//  placement : prototype | instance
+//  name      : omitted  | name = "..."
+//  readonly  : omitted  | readonly
+//  rw        : getter-only | getter + setter
+//
+//  That gives 2 × 2 × 2 × 2 = 16 logical combinations, but readonly + rw
+//  is always a compile error (tested separately in compile-fail tests), so
+//  we cover the 12 valid runtime variants below.
+// =============================================================================
+
+/// Fixture covering all valid `#[jsg_property]` combinations in one resource.
+#[jsg_resource]
+struct AllCombinations {
+    // backing values for each property
+    a: Cell<f64>,       // prototype, no-name, rw
+    b: Cell<f64>,       // prototype, no-name, readonly
+    c: Cell<f64>,       // prototype, name,    rw
+    d: Cell<f64>,       // prototype, name,    readonly
+    e: RefCell<String>, // instance,  no-name, rw
+    f: RefCell<String>, // instance,  no-name, readonly
+    g: RefCell<String>, // instance,  name,    rw
+    h: RefCell<String>, // instance,  name,    readonly
+    // extra: name before readonly (attribute order independence)
+    i: Cell<f64>, // prototype, name + readonly (name first)
+    j: Cell<f64>, // instance,  readonly + name (readonly first)
+}
+
+#[jsg_resource]
+impl AllCombinations {
+    // ---- prototype, no name, rw ------------------------------------------------
+    #[jsg_property(prototype)]
+    pub fn get_a(&self) -> Number {
+        Number::new(self.a.get())
+    }
+    #[jsg_property(prototype)]
+    pub fn set_a(&self, v: Number) {
+        self.a.set(v.value());
+    }
+
+    // ---- prototype, no name, readonly ------------------------------------------
+    #[jsg_property(prototype, readonly)]
+    pub fn get_b(&self) -> Number {
+        Number::new(self.b.get())
+    }
+
+    // ---- prototype, with name, rw ----------------------------------------------
+    #[jsg_property(prototype, name = "namedC")]
+    pub fn get_c(&self) -> Number {
+        Number::new(self.c.get())
+    }
+    #[jsg_property(prototype, name = "namedC")]
+    pub fn set_c(&self, v: Number) {
+        self.c.set(v.value());
+    }
+
+    // ---- prototype, with name, readonly ----------------------------------------
+    #[jsg_property(prototype, name = "namedD", readonly)]
+    pub fn get_d(&self) -> Number {
+        Number::new(self.d.get())
+    }
+
+    // ---- instance, no name, rw -------------------------------------------------
+    #[jsg_property(instance)]
+    pub fn get_e(&self) -> String {
+        self.e.borrow().clone()
+    }
+    #[jsg_property(instance)]
+    pub fn set_e(&self, v: String) {
+        *self.e.borrow_mut() = v;
+    }
+
+    // ---- instance, no name, readonly -------------------------------------------
+    #[jsg_property(instance, readonly)]
+    pub fn get_f(&self) -> String {
+        self.f.borrow().clone()
+    }
+
+    // ---- instance, with name, rw -----------------------------------------------
+    #[jsg_property(instance, name = "namedG")]
+    pub fn get_g(&self) -> String {
+        self.g.borrow().clone()
+    }
+    #[jsg_property(instance, name = "namedG")]
+    pub fn set_g(&self, v: String) {
+        *self.g.borrow_mut() = v;
+    }
+
+    // ---- instance, with name, readonly -----------------------------------------
+    #[jsg_property(instance, name = "namedH", readonly)]
+    pub fn get_h(&self) -> String {
+        self.h.borrow().clone()
+    }
+
+    // ---- attribute order: name before readonly (prototype) ---------------------
+    #[jsg_property(prototype, name = "namedI", readonly)]
+    pub fn get_i(&self) -> Number {
+        Number::new(self.i.get())
+    }
+
+    // ---- attribute order: readonly before name (instance) ----------------------
+    #[jsg_property(instance, readonly, name = "namedJ")]
+    pub fn get_j(&self) -> Number {
+        Number::new(self.j.get())
+    }
+}
+
+impl AllCombinations {
+    fn new() -> Self {
+        Self {
+            a: Cell::new(1.0),
+            b: Cell::new(2.0),
+            c: Cell::new(3.0),
+            d: Cell::new(4.0),
+            e: RefCell::new("e".into()),
+            f: RefCell::new("f".into()),
+            g: RefCell::new("g".into()),
+            h: RefCell::new("h".into()),
+            i: Cell::new(9.0),
+            j: Cell::new(10.0),
+        }
+    }
+}
+
+// ---- prototype, no-name, rw ---------------------------------------------------
+
+#[test]
+fn combo_prototype_noname_rw_get() {
+    let harness = crate::Harness::new();
+    harness.run_in_context(|lock, ctx| {
+        let r = jsg::Rc::new(AllCombinations::new());
+        ctx.set_global("o", r.to_js(lock));
+        let v: Number = ctx.eval(lock, "o.a").unwrap();
+        assert!((v.value() - 1.0).abs() < f64::EPSILON);
+        Ok(())
+    });
+}
+
+#[test]
+fn combo_prototype_noname_rw_set() {
+    let harness = crate::Harness::new();
+    harness.run_in_context(|lock, ctx| {
+        let r = jsg::Rc::new(AllCombinations::new());
+        ctx.set_global("o", r.to_js(lock));
+        ctx.eval_raw("o.a = 99").unwrap();
+        let v: Number = ctx.eval(lock, "o.a").unwrap();
+        assert!((v.value() - 99.0).abs() < f64::EPSILON);
+        Ok(())
+    });
+}
+
+#[test]
+fn combo_prototype_noname_rw_not_own_property() {
+    let harness = crate::Harness::new();
+    harness.run_in_context(|lock, ctx| {
+        let r = jsg::Rc::new(AllCombinations::new());
+        ctx.set_global("o", r.to_js(lock));
+        let own: bool = ctx
+            .eval(lock, "Object.prototype.hasOwnProperty.call(o, 'a')")
+            .unwrap();
+        assert!(!own, "prototype property must not be an own property");
+        Ok(())
+    });
+}
+
+// ---- prototype, no-name, readonly ---------------------------------------------
+
+#[test]
+fn combo_prototype_noname_readonly_get() {
+    let harness = crate::Harness::new();
+    harness.run_in_context(|lock, ctx| {
+        let r = jsg::Rc::new(AllCombinations::new());
+        ctx.set_global("o", r.to_js(lock));
+        let v: Number = ctx.eval(lock, "o.b").unwrap();
+        assert!((v.value() - 2.0).abs() < f64::EPSILON);
+        Ok(())
+    });
+}
+
+#[test]
+fn combo_prototype_noname_readonly_throws_in_strict() {
+    let harness = crate::Harness::new();
+    harness.run_in_context(|lock, ctx| {
+        let r = jsg::Rc::new(AllCombinations::new());
+        ctx.set_global("o", r.to_js(lock));
+        let result = ctx.eval_raw("'use strict'; o.b = 5");
+        assert!(
+            result.is_err(),
+            "readonly prototype property must throw in strict mode"
+        );
+        Ok(())
+    });
+}
+
+#[test]
+fn combo_prototype_noname_readonly_no_setter_in_descriptor() {
+    let harness = crate::Harness::new();
+    harness.run_in_context(|lock, ctx| {
+        let r = jsg::Rc::new(AllCombinations::new());
+        ctx.set_global("o", r.to_js(lock));
+        let proto = ctx.eval_raw("Object.getPrototypeOf(o)").unwrap();
+        let _ = proto;
+        let set_undef: bool = ctx
+            .eval(
+                lock,
+                "typeof Object.getOwnPropertyDescriptor(Object.getPrototypeOf(o), 'b').set === 'undefined'",
+            )
+            .unwrap();
+        assert!(set_undef, "readonly prototype property must have no setter");
+        Ok(())
+    });
+}
+
+// ---- prototype, with name, rw -------------------------------------------------
+
+#[test]
+fn combo_prototype_named_rw_get() {
+    let harness = crate::Harness::new();
+    harness.run_in_context(|lock, ctx| {
+        let r = jsg::Rc::new(AllCombinations::new());
+        ctx.set_global("o", r.to_js(lock));
+        let v: Number = ctx.eval(lock, "o.namedC").unwrap();
+        assert!((v.value() - 3.0).abs() < f64::EPSILON);
+        Ok(())
+    });
+}
+
+#[test]
+fn combo_prototype_named_rw_set() {
+    let harness = crate::Harness::new();
+    harness.run_in_context(|lock, ctx| {
+        let r = jsg::Rc::new(AllCombinations::new());
+        ctx.set_global("o", r.to_js(lock));
+        ctx.eval_raw("o.namedC = 33").unwrap();
+        let v: Number = ctx.eval(lock, "o.namedC").unwrap();
+        assert!((v.value() - 33.0).abs() < f64::EPSILON);
+        Ok(())
+    });
+}
+
+#[test]
+fn combo_prototype_named_rw_raw_rust_name_hidden() {
+    let harness = crate::Harness::new();
+    harness.run_in_context(|lock, ctx| {
+        let r = jsg::Rc::new(AllCombinations::new());
+        ctx.set_global("o", r.to_js(lock));
+        // The Rust method name "getC" / "setC" must not be visible.
+        let hidden: bool = ctx
+            .eval(
+                lock,
+                "typeof o.getC === 'undefined' && typeof o.c === 'undefined'",
+            )
+            .unwrap();
+        assert!(
+            hidden,
+            "raw getter name and camelCase default must be hidden when name is overridden"
+        );
+        Ok(())
+    });
+}
+
+// ---- prototype, with name, readonly -------------------------------------------
+
+#[test]
+fn combo_prototype_named_readonly_get() {
+    let harness = crate::Harness::new();
+    harness.run_in_context(|lock, ctx| {
+        let r = jsg::Rc::new(AllCombinations::new());
+        ctx.set_global("o", r.to_js(lock));
+        let v: Number = ctx.eval(lock, "o.namedD").unwrap();
+        assert!((v.value() - 4.0).abs() < f64::EPSILON);
+        Ok(())
+    });
+}
+
+#[test]
+fn combo_prototype_named_readonly_throws_in_strict() {
+    let harness = crate::Harness::new();
+    harness.run_in_context(|lock, ctx| {
+        let r = jsg::Rc::new(AllCombinations::new());
+        ctx.set_global("o", r.to_js(lock));
+        let result = ctx.eval_raw("'use strict'; o.namedD = 0");
+        assert!(
+            result.is_err(),
+            "named readonly prototype property must throw in strict mode"
+        );
+        Ok(())
+    });
+}
+
+// ---- instance, no-name, rw ----------------------------------------------------
+
+#[test]
+fn combo_instance_noname_rw_get() {
+    let harness = crate::Harness::new();
+    harness.run_in_context(|lock, ctx| {
+        let r = jsg::Rc::new(AllCombinations::new());
+        ctx.set_global("o", r.to_js(lock));
+        let v: String = ctx.eval(lock, "o.e").unwrap();
+        assert_eq!(v, "e");
+        Ok(())
+    });
+}
+
+#[test]
+fn combo_instance_noname_rw_set() {
+    let harness = crate::Harness::new();
+    harness.run_in_context(|lock, ctx| {
+        let r = jsg::Rc::new(AllCombinations::new());
+        ctx.set_global("o", r.to_js(lock));
+        ctx.eval_raw("o.e = 'updated'").unwrap();
+        let v: String = ctx.eval(lock, "o.e").unwrap();
+        assert_eq!(v, "updated");
+        Ok(())
+    });
+}
+
+#[test]
+fn combo_instance_noname_rw_is_own_property() {
+    let harness = crate::Harness::new();
+    harness.run_in_context(|lock, ctx| {
+        let r = jsg::Rc::new(AllCombinations::new());
+        ctx.set_global("o", r.to_js(lock));
+        let own: bool = ctx
+            .eval(lock, "Object.prototype.hasOwnProperty.call(o, 'e')")
+            .unwrap();
+        assert!(own, "instance property must be an own property");
+        Ok(())
+    });
+}
+
+#[test]
+fn combo_instance_noname_rw_in_object_keys() {
+    let harness = crate::Harness::new();
+    harness.run_in_context(|lock, ctx| {
+        let r = jsg::Rc::new(AllCombinations::new());
+        ctx.set_global("o", r.to_js(lock));
+        let keys: String = ctx.eval(lock, "Object.keys(o).sort().join(',')").unwrap();
+        assert!(
+            keys.contains('e'),
+            "instance property must appear in Object.keys(), got: {keys}"
+        );
+        Ok(())
+    });
+}
+
+// ---- instance, no-name, readonly ----------------------------------------------
+
+#[test]
+fn combo_instance_noname_readonly_get() {
+    let harness = crate::Harness::new();
+    harness.run_in_context(|lock, ctx| {
+        let r = jsg::Rc::new(AllCombinations::new());
+        ctx.set_global("o", r.to_js(lock));
+        let v: String = ctx.eval(lock, "o.f").unwrap();
+        assert_eq!(v, "f");
+        Ok(())
+    });
+}
+
+#[test]
+fn combo_instance_noname_readonly_throws_in_strict() {
+    let harness = crate::Harness::new();
+    harness.run_in_context(|lock, ctx| {
+        let r = jsg::Rc::new(AllCombinations::new());
+        ctx.set_global("o", r.to_js(lock));
+        let result = ctx.eval_raw("'use strict'; o.f = 'x'");
+        assert!(
+            result.is_err(),
+            "readonly instance property must throw in strict mode"
+        );
+        Ok(())
+    });
+}
+
+#[test]
+fn combo_instance_noname_readonly_no_setter_in_descriptor() {
+    let harness = crate::Harness::new();
+    harness.run_in_context(|lock, ctx| {
+        let r = jsg::Rc::new(AllCombinations::new());
+        ctx.set_global("o", r.to_js(lock));
+        let set_undef: bool = ctx
+            .eval(
+                lock,
+                "typeof Object.getOwnPropertyDescriptor(o, 'f').set === 'undefined'",
+            )
+            .unwrap();
+        assert!(
+            set_undef,
+            "readonly instance property must have no setter in descriptor"
+        );
+        Ok(())
+    });
+}
+
+// ---- instance, with name, rw --------------------------------------------------
+
+#[test]
+fn combo_instance_named_rw_get() {
+    let harness = crate::Harness::new();
+    harness.run_in_context(|lock, ctx| {
+        let r = jsg::Rc::new(AllCombinations::new());
+        ctx.set_global("o", r.to_js(lock));
+        let v: String = ctx.eval(lock, "o.namedG").unwrap();
+        assert_eq!(v, "g");
+        Ok(())
+    });
+}
+
+#[test]
+fn combo_instance_named_rw_set() {
+    let harness = crate::Harness::new();
+    harness.run_in_context(|lock, ctx| {
+        let r = jsg::Rc::new(AllCombinations::new());
+        ctx.set_global("o", r.to_js(lock));
+        ctx.eval_raw("o.namedG = 'ggg'").unwrap();
+        let v: String = ctx.eval(lock, "o.namedG").unwrap();
+        assert_eq!(v, "ggg");
+        Ok(())
+    });
+}
+
+#[test]
+fn combo_instance_named_rw_is_own_property() {
+    let harness = crate::Harness::new();
+    harness.run_in_context(|lock, ctx| {
+        let r = jsg::Rc::new(AllCombinations::new());
+        ctx.set_global("o", r.to_js(lock));
+        let own: bool = ctx
+            .eval(lock, "Object.prototype.hasOwnProperty.call(o, 'namedG')")
+            .unwrap();
+        assert!(own, "named instance property must be an own property");
+        Ok(())
+    });
+}
+
+#[test]
+fn combo_instance_named_rw_raw_rust_name_hidden() {
+    let harness = crate::Harness::new();
+    harness.run_in_context(|lock, ctx| {
+        let r = jsg::Rc::new(AllCombinations::new());
+        ctx.set_global("o", r.to_js(lock));
+        let hidden: bool = ctx
+            .eval(
+                lock,
+                "typeof o.getG === 'undefined' && typeof o.g === 'undefined'",
+            )
+            .unwrap();
+        assert!(
+            hidden,
+            "camelCase default name must be hidden when name is overridden"
+        );
+        Ok(())
+    });
+}
+
+// ---- instance, with name, readonly --------------------------------------------
+
+#[test]
+fn combo_instance_named_readonly_get() {
+    let harness = crate::Harness::new();
+    harness.run_in_context(|lock, ctx| {
+        let r = jsg::Rc::new(AllCombinations::new());
+        ctx.set_global("o", r.to_js(lock));
+        let v: String = ctx.eval(lock, "o.namedH").unwrap();
+        assert_eq!(v, "h");
+        Ok(())
+    });
+}
+
+#[test]
+fn combo_instance_named_readonly_throws_in_strict() {
+    let harness = crate::Harness::new();
+    harness.run_in_context(|lock, ctx| {
+        let r = jsg::Rc::new(AllCombinations::new());
+        ctx.set_global("o", r.to_js(lock));
+        let result = ctx.eval_raw("'use strict'; o.namedH = 'x'");
+        assert!(
+            result.is_err(),
+            "named readonly instance property must throw in strict mode"
+        );
+        Ok(())
+    });
+}
+
+#[test]
+fn combo_instance_named_readonly_is_own_property() {
+    let harness = crate::Harness::new();
+    harness.run_in_context(|lock, ctx| {
+        let r = jsg::Rc::new(AllCombinations::new());
+        ctx.set_global("o", r.to_js(lock));
+        let own: bool = ctx
+            .eval(lock, "Object.prototype.hasOwnProperty.call(o, 'namedH')")
+            .unwrap();
+        assert!(
+            own,
+            "named readonly instance property must still be an own property"
+        );
+        Ok(())
+    });
+}
+
+// ---- attribute ordering: name then readonly (prototype) -----------------------
+
+#[test]
+fn combo_attr_order_name_then_readonly_prototype_get() {
+    let harness = crate::Harness::new();
+    harness.run_in_context(|lock, ctx| {
+        let r = jsg::Rc::new(AllCombinations::new());
+        ctx.set_global("o", r.to_js(lock));
+        // #[jsg_property(prototype, name = "namedI", readonly)]
+        let v: Number = ctx.eval(lock, "o.namedI").unwrap();
+        assert!((v.value() - 9.0).abs() < f64::EPSILON);
+        Ok(())
+    });
+}
+
+#[test]
+fn combo_attr_order_name_then_readonly_prototype_is_readonly() {
+    let harness = crate::Harness::new();
+    harness.run_in_context(|lock, ctx| {
+        let r = jsg::Rc::new(AllCombinations::new());
+        ctx.set_global("o", r.to_js(lock));
+        let result = ctx.eval_raw("'use strict'; o.namedI = 0");
+        assert!(
+            result.is_err(),
+            "name-before-readonly prototype property must be read-only"
+        );
+        Ok(())
+    });
+}
+
+// ---- attribute ordering: readonly then name (instance) ------------------------
+
+#[test]
+fn combo_attr_order_readonly_then_name_instance_get() {
+    let harness = crate::Harness::new();
+    harness.run_in_context(|lock, ctx| {
+        let r = jsg::Rc::new(AllCombinations::new());
+        ctx.set_global("o", r.to_js(lock));
+        // #[jsg_property(instance, readonly, name = "namedJ")]
+        let v: Number = ctx.eval(lock, "o.namedJ").unwrap();
+        assert!((v.value() - 10.0).abs() < f64::EPSILON);
+        Ok(())
+    });
+}
+
+#[test]
+fn combo_attr_order_readonly_then_name_instance_is_own_and_readonly() {
+    let harness = crate::Harness::new();
+    harness.run_in_context(|lock, ctx| {
+        let r = jsg::Rc::new(AllCombinations::new());
+        ctx.set_global("o", r.to_js(lock));
+        let own: bool = ctx
+            .eval(lock, "Object.prototype.hasOwnProperty.call(o, 'namedJ')")
+            .unwrap();
+        assert!(
+            own,
+            "readonly-before-name instance property must be an own property"
+        );
+        let result = ctx.eval_raw("'use strict'; o.namedJ = 0");
+        assert!(
+            result.is_err(),
+            "readonly-before-name instance property must be read-only"
+        );
+        Ok(())
+    });
+}
+
+// ---- instance props enumerable, prototype props not ---------------------------
+
+#[test]
+fn combo_object_keys_contains_only_instance_props() {
+    let harness = crate::Harness::new();
+    harness.run_in_context(|lock, ctx| {
+        let r = jsg::Rc::new(AllCombinations::new());
+        ctx.set_global("o", r.to_js(lock));
+
+        // Instance props that MUST appear in Object.keys().
+        for key in &["e", "f", "namedG", "namedH", "namedJ"] {
+            let found: bool = ctx
+                .eval(lock, &format!("Object.keys(o).includes({key:?})"))
+                .unwrap();
+            assert!(found, "instance key '{key}' must appear in Object.keys()");
+        }
+
+        // Prototype props that must NOT appear in Object.keys().
+        for key in &["a", "b", "namedC", "namedD", "namedI"] {
+            let found: bool = ctx
+                .eval(lock, &format!("Object.keys(o).includes({key:?})"))
+                .unwrap();
+            assert!(
+                !found,
+                "prototype key '{key}' must NOT appear in Object.keys()"
+            );
+        }
+        Ok(())
+    });
+}
+
+// ---- multiple instances are independent (instance properties) -----------------
+
+#[test]
+fn combo_instance_props_independent_across_instances() {
+    let harness = crate::Harness::new();
+    harness.run_in_context(|lock, ctx| {
+        let a = jsg::Rc::new(AllCombinations::new());
+        let b = jsg::Rc::new(AllCombinations::new());
+        ctx.set_global("a", a.to_js(lock));
+        ctx.set_global("b", b.to_js(lock));
+        ctx.eval_raw("a.e = 'alpha'").unwrap();
+        let ea: String = ctx.eval(lock, "a.e").unwrap();
+        let eb: String = ctx.eval(lock, "b.e").unwrap();
+        assert_eq!(ea, "alpha");
+        assert_eq!(eb, "e", "mutating a.e must not affect b.e");
         Ok(())
     });
 }

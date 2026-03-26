@@ -15,7 +15,6 @@ use crate::ConstantValue;
 use crate::Error;
 use crate::FromJS;
 use crate::GarbageCollected;
-use crate::InstancePropertyOptions;
 use crate::Lock;
 use crate::Member;
 use crate::PropertyKind;
@@ -381,12 +380,7 @@ fn get_resource_descriptor<R: Resource>() -> v8::ffi::ResourceDescriptor {
             } => {
                 let ffi_kind = match kind {
                     PropertyKind::Prototype => v8::ffi::PropertyKind::Prototype,
-                    PropertyKind::Instance(InstancePropertyOptions { lazy: false }) => {
-                        v8::ffi::PropertyKind::Instance
-                    }
-                    PropertyKind::Instance(InstancePropertyOptions { lazy: true }) => {
-                        v8::ffi::PropertyKind::LazyInstance
-                    }
+                    PropertyKind::Instance => v8::ffi::PropertyKind::Instance,
                     PropertyKind::Inspect => v8::ffi::PropertyKind::Inspect,
                 };
                 descriptor.properties.push(v8::ffi::PropertyDescriptor {

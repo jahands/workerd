@@ -485,19 +485,19 @@ pub mod ffi {
         pub value: f64, /* number */
     }
 
-    // Flat CXX mirror of `jsg::PropertyKind`. `Instance(lazy)` is split into two
-    // variants because CXX shared enums cannot carry associated data.
+    // Flat CXX mirror of `jsg::PropertyKind`.
     enum PropertyKind {
         Prototype = 0,
         Instance = 1,
-        /// Like `Instance` but the getter fires once and the result is cached.
-        LazyInstance = 2,
+        // TODO: add LazyInstance when a proper implementation is worked out.
+        // V8's SetLazyDataProperty requires AccessorNameGetterCallback ABI which
+        // is incompatible with the FunctionCallbackInfo-style Rust callbacks.
         /// Registered under a unique symbol; invisible to normal enumeration.
-        Inspect = 3,
+        Inspect = 2,
     }
 
     /// Descriptor for a single accessor property. `setter_callback` is `None` for
-    /// read-only properties; ignored entirely for `Inspect` and `LazyInstance`.
+    /// read-only properties; ignored entirely for `Inspect`.
     pub struct PropertyDescriptor {
         pub name: String,
         pub kind: PropertyKind,

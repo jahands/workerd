@@ -760,6 +760,11 @@ Global create_resource_template(Isolate* isolate, const ResourceDescriptor& desc
   const bool specCompliant = workerd::jsg::getSpecCompliantPropertyAttributes(isolate);
 
   for (const auto& prop: descriptor.properties) {
+    // NewFromUtf8 returns an empty MaybeLocal (without scheduling a JS exception) when the
+    // string exceeds v8::String::kMaxLength. Check the length first so that the subsequent
+    // jsg::check() call does not misinterpret a missing exception as an ICE.
+    KJ_REQUIRE(prop.name.size() <= static_cast<size_t>(v8::String::kMaxLength),
+        "Rust property name exceeds V8 string length limit", prop.name);
     auto v8Name = ::workerd::jsg::check(v8::String::NewFromUtf8(
         isolate, prop.name.data(), v8::NewStringType::kInternalized, prop.name.size()));
 
@@ -783,27 +788,6 @@ Global create_resource_template(Isolate* isolate, const ResourceDescriptor& desc
     };
 
     switch (prop.kind) {
-      case PropertyKind::LazyInstance: {
-        // Mirrors registerLazyInstanceProperty in resource.h.
-        //
-        // V8's true lazy-data-property API (ObjectTemplate::SetLazyDataProperty) requires an
-        // AccessorNameGetterCallback, whose ABI is `void(Local<Name>, const
-        // PropertyCallbackInfo<Value>&)`.  Rust-side callbacks are generated as
-        // FunctionCallbackInfo-style, which has a different internal stack-frame layout —
-        // these two callback types cannot be safely reinterpret_cast between each other.
-        //
-        // We therefore implement LazyInstance with SetAccessorProperty on the InstanceTemplate,
-        // which accepts FunctionTemplate-based callbacks and produces the same
-        // JavaScript-visible semantics (own property, read-only, enumerable) without the
-        // V8-internal caching optimisation that SetLazyDataProperty provides.
-        //
-        // Lazy instance properties are always read-only (no setter).
-        // spec_compliant_property_attributes applies getter .length / .name as usual.
-        auto getterFn = makePropFn(prop.getter_callback, true);
-        instance->SetAccessorProperty(v8Name, getterFn, v8::Local<v8::FunctionTemplate>(),
-            static_cast<v8::PropertyAttribute>(v8::PropertyAttribute::ReadOnly));
-        break;
-      }
       case PropertyKind::Prototype: {
         // Mirrors registerPrototypeProperty / registerReadonlyPrototypeProperty in resource.h.
         auto getterFn = makePropFn(prop.getter_callback, true);
@@ -842,6 +826,12 @@ Global create_resource_template(Isolate* isolate, const ResourceDescriptor& desc
         // Register under a unique symbol so the property is invisible to normal enumeration
         // and string-key lookup; only surfaced by util.inspect() / console.log.
         // spec_compliant_property_attributes has no effect on inspect properties.
+        //
+        // TODO: C++ registerInspectProperty also stores the symbol in the `inspectProperties`
+        // dictionary (resource.h:1521-1535) so that node:util's inspect() can discover it by
+        // name lookup. The Rust side currently skips this step. Until this is implemented,
+        // Rust-defined inspect properties are still accessible via their symbol but may not be
+        // found by the standard `inspectProperties` lookup path used by node:util.
         auto symbol = v8::Symbol::New(isolate, v8Name);
         auto getterFn = v8::FunctionTemplate::New(isolate,
             reinterpret_cast<v8::FunctionCallback>(reinterpret_cast<void*>(prop.getter_callback)));

@@ -253,8 +253,9 @@ class SyntheticModule final: public Module {
       Type type,
       ModuleBundle::BundleBuilder::EvaluateCallback callback,
       kj::Array<kj::String> namedExports,
-      Flags flags = Flags::NONE)
-      : Module(kj::mv(id), type, flags),
+      Flags flags = Flags::NONE,
+      ContentType contentType = ContentType::NONE)
+      : Module(kj::mv(id), type, flags, contentType),
         callback(kj::mv(callback)),
         namedExports(kj::mv(namedExports)) {
     // Synthetic modules can never be ESM or Main
@@ -329,6 +330,72 @@ class SyntheticModule final: public Module {
 WD_STRONG_BOOL(SourcePhase);
 #pragma clang diagnostic pop
 
+// Parses import attributes from V8's FixedArray format (key-value-location triples).
+// Returns the value of the "type" attribute if present, or kj::none if no attributes.
+// Throws TypeError for any unrecognized attribute keys or unsupported type values.
+kj::Maybe<kj::StringPtr> parseImportAttributes(
+    Lock& js, v8::Local<v8::FixedArray> import_attributes) {
+  if (import_attributes.IsEmpty() || import_attributes->Length() == 0) {
+    return kj::none;
+  }
+  // V8 encodes import attributes as a FixedArray of triples: [key, value, location, ...]
+  kj::Maybe<kj::StringPtr> typeValue;
+  for (int i = 0; i < import_attributes->Length(); i += 3) {
+    auto key = js.toString(import_attributes->Get(i).As<v8::String>());
+    if (key == "type"_kj) {
+      auto value = js.toString(import_attributes->Get(i + 1).As<v8::String>());
+      if (value == "json"_kj) {
+        typeValue = "json"_kjc;
+      } else if (value == "text"_kj) {
+        typeValue = "text"_kjc;
+      } else if (value == "bytes"_kj) {
+        typeValue = "bytes"_kjc;
+      } else {
+        js.throwException(
+            js.typeError(kj::str("Unsupported import attribute type: \"", value, "\"")));
+      }
+    } else {
+      js.throwException(js.typeError(kj::str("Unsupported import attribute: \"", key, "\"")));
+    }
+  }
+  return typeValue;
+}
+
+// Validates that the resolved module's content type matches the import attribute "type" value.
+// Throws TypeError on mismatch. Does nothing if no type attribute was specified.
+void validateImportType(
+    Lock& js, kj::Maybe<kj::StringPtr> importType, const Module& module, kj::StringPtr specifier) {
+  KJ_IF_SOME(type, importType) {
+    // Import Text (TC39 Stage 3) and Import Bytes (TC39 Stage 2.7) are
+    // recognized but not yet supported. Text support is pending the proposal
+    // reaching Stage 4. Bytes support requires Uint8Array backed by an
+    // immutable ArrayBuffer, which is not yet implemented.
+    if (type == "text"_kj) {
+      js.throwException(js.typeError("Import attribute type \"text\" is not yet supported"_kj));
+    }
+    if (type == "bytes"_kj) {
+      js.throwException(js.typeError("Import attribute type \"bytes\" is not yet supported"_kj));
+    }
+
+    Module::ContentType expected = Module::ContentType::NONE;
+    if (type == "json"_kj) {
+      expected = Module::ContentType::JSON;
+    }
+    // TODO(later): Enable when Import Text (TC39) reaches Stage 4.
+    // else if (type == "text"_kj) {
+    //   expected = Module::ContentType::TEXT;
+    // }
+    // TODO(later): Enable when immutable ArrayBuffer is implemented.
+    // else if (type == "bytes"_kj) {
+    //   expected = Module::ContentType::DATA;
+    // }
+    if (module.contentType() != expected) {
+      js.throwException(
+          js.typeError(kj::str("Module \"", specifier, "\" is not of type \"", type, "\"")));
+    }
+  }
+}
+
 // Binds a ModuleRegistry to an Isolate.
 class IsolateModuleRegistry final {
  public:
@@ -385,7 +452,8 @@ class IsolateModuleRegistry final {
       Url normalizedSpecifier,
       Url referrer,
       kj::StringPtr rawSpecifier,
-      SourcePhase sourcePhase) {
+      SourcePhase sourcePhase,
+      kj::Maybe<kj::StringPtr> importType = kj::none) {
     static constexpr auto evaluate = [](Lock& js, Entry& entry, const CompilationObserver& observer,
                                          const Module::Evaluator& maybeEvaluate) {
       auto module = entry.key.getHandle(js);
@@ -415,6 +483,9 @@ class IsolateModuleRegistry final {
       };
 
       auto handleFoundModule = [&](Entry& found) -> Promise<Value> {
+        // Validate import type attribute against the resolved module's content type.
+        validateImportType(js, importType, found.module, rawSpecifier);
+
         auto v8Module = found.key.getHandle(js);
         if (v8Module->GetStatus() == v8::Module::kErrored) {
           return js.rejectedPromise<Value>(v8Module->GetException());
@@ -862,17 +933,9 @@ v8::MaybeLocal<v8::Promise> dynamicImportModuleCallback(v8::Local<v8::Context> c
     return js.tryCatch([&]() -> v8::MaybeLocal<v8::Promise> {
       auto spec = specifierToString(js, specifier);
 
-      // The proposed specification for import attributes strongly recommends that
-      // embedders reject import attributes and types they do not understand/implement.
-      // This is because import attributes can alter the interpretation of a module.
-      // Throwing an error for things we do not understand is the safest thing to do
-      // for backwards compatibility.
-      //
-      // For now, we do not support any import attributes, so if there are any at all
-      // we will reject the import.
-      if (!import_attributes.IsEmpty() && import_attributes->Length() > 0) {
-        return rejected(js, js.typeError("Import attributes are not supported"));
-      };
+      // Parse import attributes. Throws for unrecognized attribute keys.
+      // Returns the "type" value if specified, or kj::none.
+      auto importType = parseImportAttributes(js, import_attributes);
 
       Url referrer = ([&] {
         if (resource_name.IsEmpty()) {
@@ -894,12 +957,12 @@ v8::MaybeLocal<v8::Promise> dynamicImportModuleCallback(v8::Local<v8::Context> c
       KJ_IF_SOME(processUrl, maybeRedirectNodeProcess(js, spec.asPtr())) {
         auto processSpec = kj::str(processUrl.getHref());
         return registry.dynamicResolve(
-            js, processUrl.clone(), kj::mv(referrer), processSpec, isSourcePhase);
+            js, processUrl.clone(), kj::mv(referrer), processSpec, isSourcePhase, importType);
       }
 
       KJ_IF_SOME(url, referrer.tryResolve(spec.asPtr())) {
         return registry.dynamicResolve(js, url.clone(Url::EquivalenceOption::NORMALIZE_PATH),
-            kj::mv(referrer), spec, isSourcePhase);
+            kj::mv(referrer), spec, isSourcePhase, importType);
       }
 
       // We were not able to parse the specifier. We'll return a rejected promise.
@@ -974,11 +1037,8 @@ v8::MaybeLocal<std::conditional_t<IsSourcePhase, v8::Object, v8::Module>> resolv
     // Throwing an error for things we do not understand is the safest thing to do
     // for backwards compatibility.
     //
-    // For now, we do not support any import attributes, so if there are any at all
-    // we will reject the import.
-    if (!import_attributes.IsEmpty() && import_attributes->Length() > 0) {
-      js.throwException(js.typeError("Import attributes are not supported"));
-    }
+    // Parse import attributes. Throws for unrecognized attribute keys.
+    auto importType = parseImportAttributes(js, import_attributes);
 
     ResolveContext::Type type = ResolveContext::Type::BUNDLE;
 
@@ -1052,6 +1112,11 @@ v8::MaybeLocal<std::conditional_t<IsSourcePhase, v8::Object, v8::Module>> resolv
         js.throwException(
             js.typeError(kj::str("Circular dependency when resolving module: ", spec)));
         return v8::MaybeLocal<ReturnType>();
+      }
+
+      // Validate import type attribute against the resolved module's content type.
+      KJ_IF_SOME(entry, registry.lookup(js, resolved)) {
+        validateImportType(js, importType, entry.module, spec);
       }
 
       if constexpr (!IsSourcePhase) {
@@ -1438,15 +1503,17 @@ const jsg::Url processModuleName(kj::StringPtr name, const jsg::Url& base) {
 
 }  // namespace
 
-ModuleBundle::BundleBuilder& ModuleBundle::BundleBuilder::addSyntheticModule(
-    kj::StringPtr name, EvaluateCallback callback, kj::Array<kj::String> namedExports) {
+ModuleBundle::BundleBuilder& ModuleBundle::BundleBuilder::addSyntheticModule(kj::StringPtr name,
+    EvaluateCallback callback,
+    kj::Array<kj::String> namedExports,
+    Module::ContentType contentType) {
   const auto url = processModuleName(name, bundleBase);
   add(url,
       [url = url.clone(), callback = kj::mv(callback), namedExports = kj::mv(namedExports),
-          type = type()](const ResolveContext& context) mutable
+          type = type(), contentType](const ResolveContext& context) mutable
       -> kj::Maybe<kj::OneOf<kj::String, kj::Own<Module>>> {
-    kj::Own<Module> mod =
-        Module::newSynthetic(kj::mv(url), type, kj::mv(callback), kj::mv(namedExports));
+    kj::Own<Module> mod = Module::newSynthetic(kj::mv(url), type, kj::mv(callback),
+        kj::mv(namedExports), Module::Flags::NONE, contentType);
     return kj::Maybe<kj::OneOf<kj::String, kj::Own<Module>>>(kj::mv(mod));
   });
   return *this;
@@ -1485,8 +1552,8 @@ ModuleBundle::BundleBuilder& ModuleBundle::BundleBuilder::addWasmModule(
       [url = url.clone(), callback = kj::mv(callback), type = type()](
           const ResolveContext& context) mutable
       -> kj::Maybe<kj::OneOf<kj::String, kj::Own<Module>>> {
-    kj::Own<Module> mod =
-        Module::newSynthetic(kj::mv(url), type, kj::mv(callback), nullptr, EsModule::Flags::WASM);
+    kj::Own<Module> mod = Module::newSynthetic(kj::mv(url), type, kj::mv(callback), nullptr,
+        EsModule::Flags::WASM, Module::ContentType::WASM);
     return kj::Maybe<kj::OneOf<kj::String, kj::Own<Module>>>(kj::mv(mod));
   });
   return *this;
@@ -1760,7 +1827,11 @@ JsValue ModuleRegistry::resolve(Lock& js,
 
 // ======================================================================================
 
-Module::Module(Url id, Type type, Flags flags): id_(kj::mv(id)), type_(type), flags_(flags) {}
+Module::Module(Url id, Type type, Flags flags, ContentType contentType)
+    : id_(kj::mv(id)),
+      type_(type),
+      flags_(flags),
+      contentType_(contentType) {}
 
 kj::Maybe<jsg::Promise<Value>> Module::Evaluator::operator()(jsg::Lock& js,
     const Module& module,
@@ -1805,9 +1876,14 @@ bool Module::evaluateContext(const ResolveContext& context) const {
   return true;
 }
 
-kj::Own<Module> Module::newSynthetic(
-    Url id, Type type, EvaluateCallback callback, kj::Array<kj::String> namedExports, Flags flags) {
-  return kj::heap<SyntheticModule>(kj::mv(id), type, kj::mv(callback), kj::mv(namedExports), flags);
+kj::Own<Module> Module::newSynthetic(Url id,
+    Type type,
+    EvaluateCallback callback,
+    kj::Array<kj::String> namedExports,
+    Flags flags,
+    ContentType contentType) {
+  return kj::heap<SyntheticModule>(
+      kj::mv(id), type, kj::mv(callback), kj::mv(namedExports), flags, contentType);
 }
 
 kj::Own<Module> Module::newEsm(Url id, Type type, kj::Array<const char> code, Flags flags) {

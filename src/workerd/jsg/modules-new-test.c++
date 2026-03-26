@@ -1965,12 +1965,69 @@ KJ_TEST("Aliased modules (import maps) work") {
 
 // ======================================================================================
 
-KJ_TEST("Import attributes are currently unsupported") {
+KJ_TEST("Import attribute type:json succeeds for JSON modules") {
   ResolveObserver resolveObserver;
   CompilationObserver compilationObserver;
   ModuleBundle::BundleBuilder builder(BASE);
 
-  auto foo = kj::str("import abc from 'foo' with { type: 'json' };");
+  // An ESM that imports a JSON module with the type attribute
+  auto entry = kj::str("import data from 'data.json' with { type: 'json' }; export default data;");
+  builder.addEsmModule("entry", entry, Module::Flags::MAIN);
+
+  auto json = kj::str("{\"key\": \"value\"}");
+  builder.addSyntheticModule("data.json", Module::newJsonModuleHandler(json.first(json.size())),
+      nullptr, Module::ContentType::JSON);
+
+  auto registry = ModuleRegistry::Builder(resolveObserver, BASE).add(builder.finish()).finish();
+
+  PREAMBLE([&](Lock& js) {
+    auto attached = registry->attachToIsolate(js, compilationObserver);
+
+    js.tryCatch([&] {
+      auto val = ModuleRegistry::resolve(js, "file:///entry", "default"_kjc);
+      // The JSON module should have been resolved and its value should be the parsed object.
+      KJ_ASSERT(!val.isUndefined());
+    }, [&](Value exception) { js.throwException(kj::mv(exception)); });
+  });
+}
+
+// ======================================================================================
+
+KJ_TEST("Import attribute type:json fails for non-JSON modules") {
+  ResolveObserver resolveObserver;
+  CompilationObserver compilationObserver;
+  ModuleBundle::BundleBuilder builder(BASE);
+
+  // An ESM that imports another ESM with type:json (should fail - ESM is not JSON)
+  auto entry = kj::str("import foo from 'other' with { type: 'json' }; export default foo;");
+  builder.addEsmModule("entry", entry, Module::Flags::MAIN);
+
+  auto other = kj::str("export default 42;");
+  builder.addEsmModule("other", other);
+
+  auto registry = ModuleRegistry::Builder(resolveObserver, BASE).add(builder.finish()).finish();
+
+  PREAMBLE([&](Lock& js) {
+    auto attached = registry->attachToIsolate(js, compilationObserver);
+
+    js.tryCatch([&] {
+      ModuleRegistry::resolve(js, "file:///entry", "default"_kjc);
+      JSG_FAIL_REQUIRE(Error, "Should have thrown");
+    }, [&](Value exception) {
+      auto str = kj::str(exception.getHandle(js));
+      KJ_ASSERT(str == "TypeError: Module \"other\" is not of type \"json\"");
+    });
+  });
+}
+
+// ======================================================================================
+
+KJ_TEST("Unsupported import attributes are rejected") {
+  ResolveObserver resolveObserver;
+  CompilationObserver compilationObserver;
+  ModuleBundle::BundleBuilder builder(BASE);
+
+  auto foo = kj::str("import abc from 'foo' with { unsupported: 'value' };");
   builder.addEsmModule("foo", foo);
 
   auto registry = ModuleRegistry::Builder(resolveObserver, BASE).add(builder.finish()).finish();
@@ -1983,7 +2040,7 @@ KJ_TEST("Import attributes are currently unsupported") {
       JSG_FAIL_REQUIRE(Error, "Should have thrown");
     }, [&](Value exception) {
       auto str = kj::str(exception.getHandle(js));
-      KJ_ASSERT(str == "TypeError: Import attributes are not supported");
+      KJ_ASSERT(str == "TypeError: Unsupported import attribute: \"unsupported\"");
     });
   });
 }

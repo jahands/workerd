@@ -258,15 +258,14 @@ export const queryAndFragment = {
   },
 };
 
-// We do not currently support import attributes. Per the recommendation
-// in the spec, we throw an error when they are encountered.
+// Unrecognized import attributes are rejected.
 export const importAssertionsFail = {
   async test() {
     await rejects(import('ia'), {
-      message: /^Import attributes are not supported/,
+      message: /^Unsupported import attribute: "a"/,
     });
     await rejects(import('foo', { with: { a: 'abc' } }), {
-      message: /^Import attributes are not supported/,
+      message: /^Unsupported import attribute: "a"/,
     });
   },
 };

@@ -155,8 +155,9 @@ static kj::Arc<jsg::modules::ModuleRegistry> newWorkerModuleRegistry(
           // module registry. We can safely pass a reference to the module handler.
           // It will not be copied into a JS string until the module is actually
           // evaluated.
-          bundleBuilder.addSyntheticModule(
-              def.name, jsg::modules::Module::newTextModuleHandler(content.body));
+          bundleBuilder.addSyntheticModule(def.name,
+              jsg::modules::Module::newTextModuleHandler(content.body), nullptr,
+              jsg::modules::Module::ContentType::TEXT);
           break;
         }
         KJ_CASE_ONEOF(content, Worker::Script::DataModule) {
@@ -164,8 +165,9 @@ static kj::Arc<jsg::modules::ModuleRegistry> newWorkerModuleRegistry(
           // module registry. We can safely pass a reference to the module handler.
           // It will not be copied into a JS string until the module is actually
           // evaluated.
-          bundleBuilder.addSyntheticModule(
-              def.name, jsg::modules::Module::newDataModuleHandler(content.body));
+          bundleBuilder.addSyntheticModule(def.name,
+              jsg::modules::Module::newDataModuleHandler(content.body), nullptr,
+              jsg::modules::Module::ContentType::DATA);
           break;
         }
         KJ_CASE_ONEOF(content, Worker::Script::WasmModule) {
@@ -181,8 +183,9 @@ static kj::Arc<jsg::modules::ModuleRegistry> newWorkerModuleRegistry(
           // module registry. We can safely pass a reference to the module handler.
           // It will not be copied into a JS string until the module is actually
           // evaluated.
-          bundleBuilder.addSyntheticModule(
-              def.name, jsg::modules::Module::newJsonModuleHandler(content.body));
+          bundleBuilder.addSyntheticModule(def.name,
+              jsg::modules::Module::newJsonModuleHandler(content.body), nullptr,
+              jsg::modules::Module::ContentType::JSON);
           break;
         }
         KJ_CASE_ONEOF(content, Worker::Script::CommonJsModule) {

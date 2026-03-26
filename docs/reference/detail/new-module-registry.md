@@ -118,6 +118,19 @@ IsolateModuleRegistry
 | `EVAL` | 0x04 | Requires evaluation outside IoContext (deferred to `EvalCallback`) |
 | `WASM` | 0x08 | WebAssembly module                                                 |
 
+### `Module::ContentType` enum
+
+Used to validate import attributes (e.g. `with { type: 'json' }`). Set at
+module construction time.
+
+| ContentType | Meaning                                              |
+| ----------- | ---------------------------------------------------- |
+| `NONE`      | No specific content type (ESM, CJS, builtin objects) |
+| `JSON`      | JSON module                                          |
+| `TEXT`      | Text module                                          |
+| `DATA`      | Data/binary module                                   |
+| `WASM`      | WebAssembly module                                   |
+
 ## Module Subclasses
 
 `Module` is an abstract base class. Two concrete implementations exist
@@ -702,9 +715,31 @@ returning a rejected promise with the cached exception.
    functions can be called multiple times from multiple isolates. They create
    fresh JS objects each time.
 
-7. **Import attributes are rejected.** The current implementation throws
-   `TypeError` for any import attributes. This is the spec-recommended default
-   for unrecognized attributes.
+7. **Import attributes are validated.** The `type` import attribute is supported
+   for both static and dynamic imports. Each `Module` has a `ContentType`
+   (`NONE`, `JSON`, `TEXT`, `DATA`, `WASM`) set at construction time. Supported
+   type values and their corresponding TC39 proposals:
+   - `type: 'json'` — JSON Modules (TC39 Stage 4, finished) → `ContentType::JSON`.
+     This is the only type currently enabled.
+   - `type: 'text'` — Import Text (TC39 Stage 3) → `ContentType::TEXT`.
+     Recognized but rejected with "not yet supported" pending Stage 4.
+   - `type: 'bytes'` — Import Bytes (TC39 Stage 2.7) → `ContentType::DATA`.
+     Recognized but rejected with "not yet supported". The proposal requires
+     `Uint8Array` backed by an immutable `ArrayBuffer`, which is not yet
+     implemented. Data modules currently expose mutable `ArrayBuffer`s.
+     All three types are parsed in `parseImportAttributes`. Only `json` passes
+     validation in `validateImportType`; `text` and `bytes` are rejected there
+     with specific error messages. The `ContentType` enum and module tagging are
+     fully plumbed for all three, ready to enable when the proposals are ready.
+     When a type attribute is specified, the resolved module's content type must
+     match or a `TypeError` is thrown. Unrecognized attribute keys (anything
+     other than `type`) and unsupported type values are rejected with `TypeError`.
+     Attribute parsing is handled
+     by `parseImportAttributes()` which reads V8's `FixedArray` of key-value-
+     location triples. Validation is handled by `validateImportType()` which
+     compares the declared type against `Module::contentType()`. Both static
+     imports (`resolveModuleCallback`) and dynamic imports
+     (`dynamicImportModuleCallback` → `dynamicResolve`) use these helpers.
 
 8. **`require()` return value semantics (UNWRAP_DEFAULT).** When callers use the
    `UNWRAP_DEFAULT` require option (used by `createRequire` and

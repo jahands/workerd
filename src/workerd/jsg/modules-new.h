@@ -237,6 +237,17 @@ class Module {
     FALLBACK,
   };
 
+  // The content type of the module, used to validate import attributes.
+  // For instance, `import data from './data.json' with { type: 'json' }`
+  // will only succeed if the module's content type is JSON.
+  enum class ContentType : uint8_t {
+    NONE,  // No specific content type (ESM, CJS, builtin objects, etc.)
+    JSON,  // JSON module
+    TEXT,  // Text module
+    DATA,  // Data/binary module
+    WASM,  // WebAssembly module
+  };
+
   // The flags are set internally and are used to identify various properties
   // of the module.
   enum class Flags : uint8_t {
@@ -299,6 +310,11 @@ class Module {
 
   // If isWasm() returns true, then the module is a WebAssembly module.
   inline bool isWasm() const;
+
+  // Returns the content type of the module.
+  inline ContentType contentType() const {
+    return contentType_;
+  }
 
   // Returns a v8::Module representing this Module definition for the given isolate.
   // The return value follows the established v8 rules for Maybe. If the returned
@@ -373,7 +389,8 @@ class Module {
       Type type,
       EvaluateCallback callback,
       kj::Array<kj::String> namedExports = nullptr,
-      Flags flags = Flags::NONE);
+      Flags flags = Flags::NONE,
+      ContentType contentType = ContentType::NONE);
 
   // Creates a new ESM module that takes ownership of the given code array.
   // This is generally used to construct ESM modules from a worker bundle.
@@ -454,12 +471,13 @@ class Module {
   }
 
  protected:
-  Module(Url id, Type type, Flags flags = Flags::NONE);
+  Module(Url id, Type type, Flags flags = Flags::NONE, ContentType contentType = ContentType::NONE);
 
  private:
   const Url id_;
   Type type_;
   Flags flags_;
+  ContentType contentType_;
 
   // TODO: Support source objects as optional instantiation-hook creations and move
   // Wasm compilation to start at instantiation-time instead of evaluation-time.
@@ -525,7 +543,8 @@ class ModuleBundle {
 
     BundleBuilder& addSyntheticModule(kj::StringPtr name,
         EvaluateCallback callback,
-        kj::Array<kj::String> namedExports = nullptr) KJ_LIFETIMEBOUND;
+        kj::Array<kj::String> namedExports = nullptr,
+        Module::ContentType contentType = Module::ContentType::NONE) KJ_LIFETIMEBOUND;
 
     BundleBuilder& addEsmModule(kj::StringPtr name,
         kj::ArrayPtr<const char> code,

@@ -565,7 +565,13 @@ kj::Promise<WorkerInterface::AlarmResult> ServiceWorkerGlobalScope::runAlarm(kj:
 
         // We only want to retry against limits if it's a user error. By default let's check if the
         // output gate is broken.
-        auto shouldRetryCountsAgainstLimits = !context.isOutputGateBroken();
+        //
+        // Special case: when a user throws inside blockConcurrencyWhile after starting a storage
+        // operation, the output gate may also appear broken as a secondary side-effect. Treat it
+        // as a user error so retries count against the limit and the alarm is eventually deleted.
+        auto isInputGateBrokenByUser = jsg::isExceptionFromInputGateBroken(description);
+        auto shouldRetryCountsAgainstLimits =
+            !context.isOutputGateBroken() || isInputGateBrokenByUser;
 
         // We want to alert if we aren't going to count this alarm retry against limits
         if (log && context.isOutputGateBroken()) {
@@ -605,13 +611,20 @@ kj::Promise<WorkerInterface::AlarmResult> ServiceWorkerGlobalScope::runAlarm(kj:
           }
           // We only want to retry against limits if it's a user error. By default let's assume it's our
           // fault.
-          auto shouldRetryCountsAgainstLimits = false;
+          //
+          // Special case: when a user throws inside blockConcurrencyWhile after starting a storage
+          // operation, the output gate also appears broken as a secondary side-effect. Treat it
+          // as a user error so retries count against the limit and the alarm is eventually deleted.
+          auto isInputGateBrokenByUser = jsg::isExceptionFromInputGateBroken(e.getDescription());
+          auto shouldRetryCountsAgainstLimits = isInputGateBrokenByUser;
           if (auto desc = e.getDescription();
               !jsg::isTunneledException(desc) && !jsg::isDoNotLogException(desc)) {
-            if (isInterestingException(e)) {
-              LOG_EXCEPTION("alarmOutputLock"_kj, e);
-            } else {
-              LOG_NOSENTRY(ERROR, "output lock broke after executing alarm", actorId, e);
+            if (!isInputGateBrokenByUser) {
+              if (isInterestingException(e)) {
+                LOG_EXCEPTION("alarmOutputLock"_kj, e);
+              } else {
+                LOG_NOSENTRY(ERROR, "output lock broke after executing alarm", actorId, e);
+              }
             }
           } else {
             if (e.getDetail(jsg::EXCEPTION_IS_USER_ERROR) != kj::none) {
